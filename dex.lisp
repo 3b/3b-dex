@@ -41,21 +41,8 @@
          (= (elt magic 7) 0)
          (dex-version magic))))
 
-#++(check-dex-magic (dex-magic 35))
 
-(defclass dex-file ()
-  ((version :initform *default-format* :initarg :version :accessor version)
-   (endian :initform :le :initarg :endian :accessor endian)
-   (link-table :initarg :link-table :accessor link-table)
-   (maps :initarg :maps :accessor map-list)
-   (strings :initarg :strings :accessor strings)
-   (types :initarg :types :accessor types)
-   (prototypes :initarg :prototypes :accessor prototypes)
-   (fields :initarg :fields :accessor fields)
-   (methods :initarg :methods :accessor methods)
-   (classes :initarg :classes :accessor classes)
-   (data :initarg :data :accessor data))
-)
+#++(check-dex-magic (dex-magic 35))
 
 ;;; readers assume (unsigned-byte 8) stream
 ;;; TODO: verify type of stream
@@ -177,47 +164,6 @@
     (read-sequence v stream)
     v))
 
-
-(defun read-link-table (stream count start data)
-  (when (plusp count)
-    (let ((a (make-array count)))
-      a)))
-
-#++(defun decode-mutf8 (octets &key decoded-length)
-  (flex:with-output-to-sequence (o :element-type '(unsigned-byte 16))
-    ;; todo: better errors
-    (loop with partial = 0
-          with remaining = 0
-          for i across octets
-          do
-             (if (logbitp 7 i)
-                  ;; multibyte
-                 (cond
-                   ((and (= (ldb (byte 2 6) i) 2)
-                         (plusp remaining))
-                    ;; continuation
-                    (setf partial (+ (ash partial 6) (ldb (byte 6 0) i)))
-                    (decf remaining)
-                    (when (zerop remaining)
-                      (write-byte partial o)))
-                   ((and (= (ldb (byte 3 5) i) 6)
-                         (zerop remaining))
-                    ;; 2 byte
-                    (setf remaining 1
-                          partial (ldb (byte 6 0) i)))
-                   ((and (= (ldb (byte 4 4) i) 14)
-                         (zerop remaining))
-                    ;; 3 byte
-                    (setf remaining 2
-                          partial (ldb (byte 5 0) i)))
-                   (t ;; anything else is invalid
-                    (error "invalid mutf-8 encoding at octet ~d of ~s" i octets)))
-                 ;; single byte
-                 (cond
-                   ((not (zerop remaining))
-                    (error "invalid mutf-8 encoding at octet ~d of ~s" i octets))
-                   (t (write-byte i o)))))))
-
 (defun decode-mutf8 (octets &key decoded-length)
   (declare (optimize speed)
            (type (array (unsigned-byte 8) (*)) octets))
@@ -262,12 +208,6 @@
 
 #++ (decode-mutf8 #(#xc2 #xa2)) ;#(162)
 #++ (decode-mutf8 #(#xe2 #x82 #xac)) ;#(8364)
-#++
-(defun read-zero-terminated (stream &optional a)
-  (flex:with-output-to-sequence (o)
-    (loop for b = (read-byte stream)
-          while (plusp b)
-          do (write-byte b o))))
 
 (defun read-zero-terminated (stream min-size)
   (let ((buf (make-array (max min-size 1) :element-type '(unsigned-byte 8)
@@ -280,6 +220,29 @@
           while (plusp b)
           do (vector-push-extend b buf))
     buf))
+
+
+
+(defclass dex-file ()
+  ((version :initform *default-format* :initarg :version :accessor version)
+   (endian :initform :le :initarg :endian :accessor endian)
+   (link-table :initarg :link-table :accessor link-table)
+   (maps :initarg :maps :accessor map-list)
+   (strings :initarg :strings :accessor strings)
+   (types :initarg :types :accessor types)
+   (prototypes :initarg :prototypes :accessor prototypes)
+   (fields :initarg :fields :accessor fields)
+   (methods :initarg :methods :accessor methods)
+   (classes :initarg :classes :accessor classes)
+   (data :initarg :data :accessor data)))
+
+
+
+(defun read-link-table (stream count start data)
+  (when (plusp count)
+    (let ((a (make-array count)))
+      a)))
+
 
 (defun read-string-data-item (stream)
   ;; stores size of the 'decoded' utf-16 string, still have to read by octets
