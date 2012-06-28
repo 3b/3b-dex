@@ -663,7 +663,7 @@
                            :outs outs
                            :debug-info (read-debug-info stream strings types)
                            :tries tries
-                           :instructions instructions)))))
+                           :instructions (unassemble instructions))))))
 
 (defun read-class-data (class stream strings types fields methods prototypes)
   (let ((static-fields (make-array (read-uleb128 stream)))

@@ -6,4 +6,6 @@
                ;"chipz" "salza2"
                )
   :components ((:file "package")
+               (:file "opcodes")
                (:file "dex")))
+
