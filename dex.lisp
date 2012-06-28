@@ -671,12 +671,91 @@
           (virtual-methods class) virtual-methods))
   class)
 
+(defun read-encoded-annotation (stream strings types fields methods)
+  (let ((type (aref types (read-uleb128 stream)))
+        (size (read-uleb128 stream))
+        (a (make-hash-table :test 'equal)))
+    (dotimes (i size)
+      (setf (gethash (aref strings (read-uleb128 stream)) a)
+            (read-encoded-value stream strings types fields methods)))
+    ;; fixme: do something with this?
+    (list :annotation :type type :annotations a)))
+
+(defun read-encoded-value (stream strings types fields methods)
+  (let* ((arg+type (read-u8 stream))
+         (arg (ldb (byte 3 5) arg+type))
+         (type (ldb (byte 5 0) arg+type)))
+    (flet ((u32 ()
+             (loop for i below (1+ arg)
+                   sum (ash (read-u8 stream) (* i 8)))))
+      ;; todo: rage check ARG
+     (case type
+       (#x00 ;; signed byte arg should be 0
+        (read-s8 stream))
+       (#x01 ;; signed short
+        (let* ((lo (read-u8 stream))
+               (hi (cond
+                     ((plusp arg) (read-u8 stream))
+                     ((logbitp 7 lo) -1)
+                     (t 0))))
+          (logior (ash hi 8) lo)))
+       (#x02 ;; (unsigned 16-bit) shar
+        (let ((lo (read-u8 stream))
+              (hi (if (plusp arg) (read-u8 stream) 0)))
+          (logior (ash hi 8) lo)))
+       (#x03 ;; signed int
+        (let ((a (loop for i below (1+ arg)
+                       sum (ash (read-u8 stream) (* i 8)))))
+          (when (and (/= arg 3) (logbitp (+ 7 (* arg 8)) a))
+            (setf a (logior a (ash -1 (* 8 (1+ arg))))))
+          a))
+       (#x04 ;; signed long
+        (let ((a (loop for i below (1+ arg)
+                       sum (ash (read-u8 stream) (* i 8)))))
+          (when (and (/= arg 7) (logbitp (+ 7 (* arg 8)) a))
+            (setf a (logior a (ash -1 (* 8 (1+ arg))))))
+          a))
+       (#x10 ;; float32
+        (ieee-floats:decode-float32
+         (ash (loop for i below (1+ arg)
+                    sum (ash (read-u8 stream) (* i 8)))
+              (* 8 (- 3 arg)))))
+       (#x11 ;; float64
+        (ieee-floats:decode-float64
+         (ash (loop for i below (1+ arg)
+                    sum (ash (read-u8 stream) (* i 8)))
+              (* 8 (- 7 arg)))))
+       (#x17 ;; string
+        (aref strings (u32)))
+       (#x18 ;; type
+        (aref types (u32)))
+       (#x19 ;; field
+        (aref fields (u32)))
+       (#x1a ;; method
+        (aref methods (u32)))
+       (#x1b ;; enum
+        (aref fields (u32)))
+       (#x1c ;; array
+        (read-encoded-array stream strings types fields methods ))
+       (#x1d ;; annotation
+        (read-encoded-annotation stream strings types fields methods ))
+       (#x1e ;; null
+        nil)
+       (#x1f ;; boolean
+        (not (zerop arg)))
+       (t (error "invalid encoded_value? type = #x~2,'0x, arg = ~d" type arg))
+       ))))
+
+(defun read-encoded-array (stream strings types fields methods )
+  (let ((size (read-uleb128 stream)))
+    (map-into (make-array size)
+              (lambda () (read-encoded-value
+                          stream strings types fields methods)))))
+
+
 (defun read-annotations (class stream)
   )
 
-(defun read-encoded-array ( stream strings types fields methods )
-  (make-array 0)
-  )
 (defun read-classes (stream count start strings types fields methods prototypes)
   (when (plusp count)
     (file-position stream start)
