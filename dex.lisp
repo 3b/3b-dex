@@ -5,6 +5,7 @@
 ;; default version number to use in header
 (defparameter *default-format* 35)
 
+(defconstant +no-index+ #.(1- (expt 2 32))) ; #xffffffff
 (defconstant +dex-endian-constant+ #x12345678)
 (defconstant +dex-reverse-endian-constant+ #x78563412)
 
@@ -16,6 +17,17 @@
     (length (make-array length :element-type '(unsigned-byte 8)
                                :initial-element initial-element))
     (contents (make-array (length contents) :element-type '(unsigned-byte 8)
+                          :initial-contents contents))
+    (t (error "must specify length or contents to UB8-VECTOR"))))
+
+(defun ub16-vector (&key length contents (initial-element 0))
+  (cond
+    ((and length contents)
+     (make-array length :element-type '(unsigned-byte 16)
+                        :initial-contents contents))
+    (length (make-array length :element-type '(unsigned-byte 16)
+                               :initial-element initial-element))
+    (contents (make-array (length contents) :element-type '(unsigned-byte 16)
                           :initial-contents contents))
     (t (error "must specify length or contents to UB8-VECTOR"))))
 
@@ -164,6 +176,25 @@
     (read-sequence v stream)
     v))
 
+(defun read-ub16-vector (length stream)
+  ;; not sure if it would be better to read to a temp ub8 vector then swap
+  ;; or read by individual u16s
+  (let ((v8 (read-ub8-vector (* 2 length) stream))
+        (v (ub16-vector :length length)))
+    (if (eq *read-endian* :le)
+        (loop for i below length
+              do (setf (aref v i) (dpb (aref v8 (1+ (* i 2))) (byte 8 8)
+                                       (aref v8 (* i 2)))))
+        (loop for i below length
+              do (setf (aref v i) (dpb (aref v8 (* i 2)) (byte 8 8)
+                                       (aref v8 (1+ (* i 2)))))))
+    v))
+
+#++
+(let ((*read-endian* :le))
+  (flex:with-input-from-sequence (s #(#x1 #x0 #xff #xff))
+    (read-ub16-vector 2 s)))
+
 (defun decode-mutf8 (octets &key decoded-length)
   (declare (optimize speed)
            (type (array (unsigned-byte 8) (*)) octets))
@@ -222,23 +253,175 @@
     buf))
 
 
+#++
+(defparameter *all-flags* '((:public . #x01)
+                            (:private . #x02)
+                            (:protected . #x04)
+                            (:static . #x08)
+                            (:final . #x10)
+                            (:synchronized . #x20)
+                            (:volatile . #x40)
+                            (:bridge . #x40)
+                            (:transient . #x80)
+                            (:varargs . #x80)
+                            (:native . #x100)
+                            (:interface . #x200)
+                            (:abstract . #x400)
+                            (:strict . #x800)
+                            (:synthetic . #x1000)
+                            (:annotation . #x2000)
+                            (:enum . #x4000)
+                            (:unused . #x8000)
+                            (:constructor . #x10000)
+                            (:declared-synchronized . #x20000)))
+
+(defparameter *class-flags* '((:public . #x01)
+                              (:private . #x02)
+                              (:protected . #x04)
+                              (:static . #x08)
+                              (:final . #x10)
+                              (:interface . #x200)
+                              (:abstract . #x400)
+                              (:synthetic . #x1000)
+                              (:annotation . #x2000)
+                              (:enum . #x4000)))
+
+(defparameter *field-flags* '((:public . #x01)
+                              (:private . #x02)
+                              (:protected . #x04)
+                              (:static . #x08)
+                              (:final . #x10)
+                              (:volatile . #x40)
+                              (:transient . #x80)
+                              (:synthetic . #x1000)
+                              (:enum . #x4000)))
+
+(defparameter *method-flags* '((:public . #x01)
+                               (:private . #x02)
+                               (:protected . #x04)
+                               (:static . #x08)
+                               (:final . #x10)
+                               (:synchronized . #x20)
+                               (:bridge . #x40)
+                               (:varargs . #x80)
+                               (:native . #x100)
+                               (:abstract . #x400)
+                               (:strict . #x800)
+                               (:synthetic . #x1000)
+                               (:constructor . #x10000)
+                               (:declared-synchronized . #x20000)))
+
+(defun decode-flags (flags mapping)
+  (loop for (name . value) in mapping
+        when (logtest value flags)
+          collect name))
+
+(defun encode-flags (flags mapping)
+  (loop for name in flags
+        sum (cdr (assoc name mapping))))
+
+#++
+(decode-flags (encode-flags '(:public :final :enum) *field-flags*)
+              *field-flags*)
+
+(defclass dex-annotation ()
+  ((visibility)
+   (type)
+   (elements :initform (make-hash-table :test 'equal))))
+
+(defclass dex-class-field ()
+  ;; not storing class name for now
+  ((type :initarg :type :accessor field-type)
+   (name :initarg :name :accessor name)
+   (flags :initform () :initarg :flags :accessor flags)
+   (annotations :initform nil :initarg :annotations :accessor annotations)))
+
+(defclass dex-class-static-field (dex-class-field)
+  ((value :initform nil :initarg :value :accessor value)))
+
+(defclass dex-catch-handler ()
+  ((handlers :initform nil :initarg :handlers :accessor handlers)
+   (catch-all :initform nil :initarg :catch-all :accessor catch-all)))
+
+(defclass dex-try-block ()
+  ((start :initarg :start :accessor start)
+   (count :initarg :count :accessor :instruction-count)
+   (handlers :initarg :handlers :accessor handlers)))
+
+
+(defclass dex-debug-info ()
+  ((start :initarg :start :accessor start)
+   (parameters :initarg :parameters :accessor parameters)
+   (bytecode :initarg :bytecode :accessor bytecode)))
+
+
+(defclass dex-code ()
+  (;;number of registers
+   (registers :initarg :registers :accessor registers)
+   ;; number of words of incoming args
+   (ins :initarg :ins :accessor ins)
+   ;; # of words of outgoing args
+   (outs :initarg :outs :accessor outs)
+   ;; sequence of 'try' block definitions, including catch handlers
+   (tries :initarg :tries :accessor tries)
+   (debug-info :initarg :debug-info :accessor debug-info)
+   ;; sequence of u16 instructions
+   (instructions :initarg :instructions :accessor instructions)))
+
+(defclass dex-class-method ()
+  ;; not storing class for now
+  ;; not storing 'shorty' version of prototype info for now...
+  ((return-tytpe :initarg :return-type :accessor return-type)
+   ;; sequence? of types
+   (parameters :initarg :parameters :accessor parameters)
+   (name :initarg :name :accessor name)
+   (flags :initform () :initarg :flags :accessor flags)
+   (code :initform nil :initarg :code :accessor code)
+   (annotations :initform nil :initarg :annotations :accessor annotations)))
+
+
+
+(defclass dex-class ()
+  ;; not sure if we should store types as names or actual instances?
+  ;; (in superclass, interfaces, etc)
+  ((type-name :initarg :type-name :accessor type-name)
+   ;; flags = list of keywords from *class-flags*
+   (flags :initform () :initarg :flags :accessor flags)
+   ;; superclass = NIL or superclass type
+   (superclass :initform nil :initarg :superclass :accessor superclass)
+   ;; sequence? of interface types
+   (interfaces :initform nil :initarg :interfaces :accessor interfaces)
+   ;; name of source file, or NIL
+   (source-file :initform nil :initarg :source-file :accessor source-file)
+   ;; sequence? of dex-annotation instances
+   (annotations :initform nil :initarg :annotations :accessor annotations)
+   ;; sequence?s of field/method definitions
+   (static-fields :initform nil :initarg :static-fields :accessor static-fields)
+   (instance-fields :initform nil
+                    :initarg :instance-fields :accessor instance-fields)
+   (direct-methods :initform nil
+                   :initarg :direct-methods :accessor direct-methods)
+   (virtual-methods :initform nil
+                    :initarg :virtual-methods :accessor virtual-methods)))
 
 (defclass dex-file ()
   ((version :initform *default-format* :initarg :version :accessor version)
    (endian :initform :le :initarg :endian :accessor endian)
    (link-table :initarg :link-table :accessor link-table)
+   (classes :initarg :classes :accessor classes)
+   ;; probably drop the rest of these once classes deserialize and serialize
+   ;; properly?
    (maps :initarg :maps :accessor map-list)
    (strings :initarg :strings :accessor strings)
    (types :initarg :types :accessor types)
    (prototypes :initarg :prototypes :accessor prototypes)
    (fields :initarg :fields :accessor fields)
    (methods :initarg :methods :accessor methods)
-   (classes :initarg :classes :accessor classes)
    (data :initarg :data :accessor data)))
 
 
 
-(defun read-link-table (stream count start data)
+(defun read-link-table (stream count start)
   (when (plusp count)
     (let ((a (make-array count)))
       a)))
@@ -335,9 +518,205 @@
                            (aref strings (read-u32 stream)))))
       a)))
 
-(defun read-classes (stream count start)
+
+(defun read-tries (stream count)
   (when (plusp count)
+    (map-into (make-array count)
+              (lambda ()
+                (make-instance 'dex-try-block
+                               :start (read-u32 stream)
+                               :count (read-u16 stream)
+                               :handlers (read-u16 stream))))))
+
+(defun read-handler-list (stream types)
+  ;; 'tries' data structure indexes by byte offset, so we return a
+  ;; hash mapping from that to actual values rather than a straight
+  ;; sequence
+  (let* ((start (file-position stream))
+         (count (read-uleb128 stream))
+         (hash (make-hash-table)))
+    (dotimes (i count)
+      (let* ((pos (file-position stream))
+             (size (read-sleb128 stream))
+             (handlers (dotimes (j (abs size))
+                         (list (aref types (read-uleb128 stream))
+                               (read-uleb128 stream))))
+             (catch-all (unless (plusp size)
+                          (read-uleb128 stream))))
+        (setf (gethash (- pos start) hash)
+              (make-instance 'dex-catch-handler
+                             :handlers handlers
+                             :catch-all catch-all))))
+    hash))
+
+(defun read-debug-info (stream strings types)
+  (let* ((start (read-uleb128 stream))
+         (psize (read-uleb128 stream))
+         (params (coerce
+                  (loop repeat psize for i = (read-uleb128+1 stream)
+                        collect (unless (minusp i) (aref strings i)))
+                  'vector))
+         (bytecode nil))
+    ;; looks like we need to parse the bytecode to find the end reliably...
+    (flet ((name ()
+             (let ((a (read-uleb128+1 stream)))
+               (unless (minusp a) (aref strings a))))
+           (type ()
+             (let ((a (read-uleb128+1 stream)))
+               (unless (minusp a) (aref types a))))
+           (u () (read-uleb128 stream))
+           (s () (read-sleb128 stream)))
+      (setf bytecode
+            (loop for code = (read-u8 stream)
+                  collect (case code
+                            (0 (list :end-sequence))
+                            (1 (list :advance-pc (u)))
+                            (2 (list :advance-line (s)))
+                            (3 (list :start-local (u) (name) (type)))
+                            (4 (list :start-local-extended
+                                     (u) (name) (type) (name)))
+                            (5 (list :end-local (u)))
+                            (6 (list :restart-local (u)))
+                            (7 (list :prologue-end))
+                            (8 (list :epilogue-begin))
+                            (9 (list :set-file (name)))
+                            ;; possibly should expand 'special' into
+                            ;; line+pc offsets here rather than making user
+                            ;; do it?
+                            (t
+                             (list :special code)))
+                  while (/= code 0))))
+    (make-instance 'dex-debug-info :start start :parameters params
+                                   :bytecode bytecode)))
+
+(defun read-code (method stream strings types)
+  (setf (code method)
+        (unless (zerop (code method))
+          (file-position stream (code method))
+          (let* ((registers (read-u16 stream))
+                 (ins (read-u16 stream))
+                 (outs (read-u16 stream))
+                 (try-count (read-u16 stream))
+                 (debug (read-u32 stream))
+                 (count (read-u32 stream))
+                 (instructions (read-ub16-vector count stream))
+                 (padding (when (oddp count)
+                            (read-u16 stream)))
+                 (tries (read-tries stream try-count))
+                 (handlers (when (plusp try-count)
+                             (read-handler-list stream types))))
+            (declare (ignore padding))
+            (when tries
+              (loop for i across tries
+                    do (setf (handlers i)
+                             (gethash (handlers i) handlers
+                                      (list :missing-handler? (handlers i))))))
+            (file-position stream debug)
+            (make-instance 'dex-code
+                           :registers registers
+                           :ins ins
+                           :outs outs
+                           :debug-info (read-debug-info stream strings types)
+                           :tries tries
+                           :instructions instructions)))))
+
+(defun read-class-data (class stream strings types fields methods prototypes)
+  (let ((static-fields (make-array (read-uleb128 stream)))
+        (instance-fields (make-array (read-uleb128 stream)))
+        (direct-methods (make-array (read-uleb128 stream)))
+        (virtual-methods (make-array (read-uleb128 stream)))
+        ;; fields/method indices are delta encoded, so store prev value here
+        (prev-index 0))
+    (flet ((read-field (type)
+             (let* ((field-id (+ prev-index (read-uleb128 stream)))
+                    (flags (read-uleb128 stream))
+                    (field (aref fields field-id)))
+               (setf prev-index field-id)
+               (make-instance type
+                              :name (third field)
+                              :type (second field)
+                              :flags (decode-flags flags *field-flags*))))
+           (read-method ()
+             (let* ((method-id (+ prev-index (read-uleb128 stream)))
+                    (flags (read-uleb128 stream))
+                    (code (read-uleb128 stream))
+                    (method (aref methods method-id)))
+               (setf prev-index method-id)
+               (make-instance 'dex-class-method
+                              :name (third method)
+                              :return-type (second (second method))
+                              :parameters (third (second method))
+                              :flags (decode-flags flags *method-flags*)
+                              :code code))))
+      ;; read the field and method definitions
+      (setf prev-index 0)
+      (dotimes (i (length static-fields))
+        (setf (aref static-fields i) (read-field 'dex-class-static-field)))
+      (setf prev-index 0)
+      (dotimes (i (length instance-fields))
+        (setf (aref instance-fields i) (read-field 'dex-class-field)))
+      (setf prev-index 0)
+      (dotimes (i (length direct-methods))
+        (setf (aref direct-methods i) (read-method)))
+      (setf prev-index 0)
+      (dotimes (i (length virtual-methods))
+        (setf (aref virtual-methods i) (read-method)))
+      ;; read the code blocks for each method
+      (map 'nil (lambda (a) (read-code a stream strings types)) direct-methods)
+      (map 'nil (lambda (a) (read-code a stream strings types))
+           virtual-methods))
+    (setf (static-fields class) static-fields
+          (instance-fields class) instance-fields
+          (direct-methods class) direct-methods
+          (virtual-methods class) virtual-methods))
+  class)
+
+(defun read-annotations (class stream)
+  )
+
+(defun read-encoded-array ( stream strings types fields methods )
+  (make-array 0)
+  )
+(defun read-classes (stream count start strings types fields methods prototypes)
+  (when (plusp count)
+    (file-position stream start)
     (let ((a (make-array count)))
+      ;; read all of the class definitions
+      (dotimes (i count)
+        (setf (aref a i)
+              (list (read-u32 stream) (read-u32 stream) (read-u32 stream)
+                    (read-u32 stream) (read-u32 stream) (read-u32 stream)
+                    (read-u32 stream) (read-u32 stream))))
+      ;; find the individual components and build classes
+      (dotimes (i count)
+        (destructuring-bind (type flags super interfaces source-file
+                             annotations class-data static-values)
+            (aref a i)
+          (let ((c (make-instance 'dex-class
+                                  :type-name (aref types type)
+                                  :flags (decode-flags flags *class-flags*)
+                                  :superclass (unless (= super +no-index+)
+                                                (aref types super))
+                                  :source-file (unless (= source-file +no-index+)
+                                                 (aref strings source-file)))))
+            (when (plusp interfaces)
+              (file-position stream interfaces)
+              (setf (interfaces c) (read-type-list stream types)))
+            (when (plusp class-data)
+              (file-position stream class-data)
+              (read-class-data c stream strings types fields methods prototypes))
+            (when (plusp annotations)
+              (file-position stream annotations)
+              (read-annotations c stream))
+            (when (plusp static-values)
+              (file-position stream static-values)
+              (let ((v (read-encoded-array stream strings types fields methods )))
+                (map 'nil (lambda (field value)
+                            (setf (value field) value))
+                     (static-fields c)
+                     v)))
+            (setf (aref a i) c)
+)))
       a)))
 
 (defun read-dex-file (stream)
@@ -391,7 +770,8 @@
                                   strings types))
              (methods (read-methods stream methods-size methods-off
                                     strings types prototypes))
-             (classes (read-classes stream classes-size classes-off))
+             (classes (read-classes stream classes-size classes-off
+                                    strings types fields methods prototypes))
              #++(data (read-data stream data-size data-off))
              )
         (make-instance
