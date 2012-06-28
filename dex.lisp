@@ -285,16 +285,17 @@
    ;; probably drop the rest of these once classes deserialize and serialize
    ;; properly?
    (maps :initarg :maps :accessor map-list)
-   (strings :initarg :strings :accessor strings)
-   (types :initarg :types :accessor types)
-   (prototypes :initarg :prototypes :accessor prototypes)
-   (fields :initarg :fields :accessor fields)
-   (methods :initarg :methods :accessor methods)
-   (data :initarg :data :accessor data)))
+   #++(strings :initarg :strings :accessor strings)
+   #++(types :initarg :types :accessor types)
+   #++(prototypes :initarg :prototypes :accessor prototypes)
+   #++(fields :initarg :fields :accessor fields)
+   #++(methods :initarg :methods :accessor methods)
+   #++(data :initarg :data :accessor data)))
 
 
 
 (defun read-link-table (stream count start)
+  (declare (ignore stream start))
   (when (plusp count)
     (let ((a (make-array count)))
       a)))
@@ -327,7 +328,7 @@
                (setf (aref a i) (read-string-data-item stream)))
       a)))
 
-(defun read-types (stream count start strings)
+(defun read-types (stream count start)
   (when (plusp count)
     (file-position stream start)
     (let ((a (make-array count)))
@@ -335,25 +336,25 @@
       ;; possibly should decode strings into more friendly format?
       (loop for i below count
             do (setf (aref a i)
-                     (aref strings (read-u32 stream))))
+                     (aref *strings* (read-u32 stream))))
       a)))
 
-(defun read-type-list (stream types)
+(defun read-type-list (stream)
   (let* ((size (read-u32 stream))
          (l (make-array size)))
     (loop for i below size
           do (setf (aref l i)
-                   (aref types (read-u16 stream))))
+                   (aref *types* (read-u16 stream))))
     l))
 
-(defun read-prototypes (stream count start strings types)
+(defun read-prototypes (stream count start)
   (when (plusp count)
     (file-position stream start)
     (let ((a (make-array count)))
       ;; read inline info
       (loop for i below count
-            for short = (aref strings (read-u32 stream))
-            for return-type = (aref types (read-u32 stream))
+            for short = (aref *strings* (read-u32 stream))
+            for return-type = (aref *types* (read-u32 stream))
             for params-offset = (read-u32 stream)
             do (setf (aref a i)
                      (list short return-type params-offset)))
@@ -363,34 +364,33 @@
             do (setf (third prototype)
                      (when (plusp off)
                        (file-position stream off)
-                       (read-type-list stream types))))
+                       (read-type-list stream))))
       a)))
 
-(defun read-fields (stream count start strings types)
+(defun read-fields (stream count start)
   (when (plusp count)
     (file-position stream start)
     (let ((a (make-array count)))
       ;; read inline info
       (loop for i below count
             do (setf (aref a i)
-                     (list (aref types (read-u16 stream))
-                           (aref types (read-u16 stream))
-                           (aref strings (read-u32 stream))
+                     (list (aref *types* (read-u16 stream))
+                           (aref *types* (read-u16 stream))
+                           (aref *strings* (read-u32 stream))
                            ;; leave space to store instance later
                            nil)))
       a)))
 
-(defun read-methods (stream count start
-                     strings types prototypes)
+(defun read-methods (stream count start)
   (when (plusp count)
     (file-position stream start)
     (let ((a (make-array count)))
       ;; read inline info
       (loop for i below count
             do (setf (aref a i)
-                     (list (aref types (read-u16 stream))
-                           (aref prototypes (read-u16 stream))
-                           (aref strings (read-u32 stream))
+                     (list (aref *types* (read-u16 stream))
+                           (aref *prototypes* (read-u16 stream))
+                           (aref *strings* (read-u32 stream))
                            ;; leave space to store instance later
                            nil)))
       a)))
@@ -405,7 +405,7 @@
                                :count (read-u16 stream)
                                :handlers (read-u16 stream))))))
 
-(defun read-handler-list (stream types)
+(defun read-handler-list (stream)
   ;; 'tries' data structure indexes by byte offset, so we return a
   ;; hash mapping from that to actual values rather than a straight
   ;; sequence
@@ -416,7 +416,7 @@
       (let* ((pos (file-position stream))
              (size (read-sleb128 stream))
              (handlers (dotimes (j (abs size))
-                         (list (aref types (read-uleb128 stream))
+                         (list (aref *types* (read-uleb128 stream))
                                (read-uleb128 stream))))
              (catch-all (unless (plusp size)
                           (read-uleb128 stream))))
@@ -426,21 +426,21 @@
                              :catch-all catch-all))))
     hash))
 
-(defun read-debug-info (stream strings types)
+(defun read-debug-info (stream)
   (let* ((start (read-uleb128 stream))
          (psize (read-uleb128 stream))
          (params (coerce
                   (loop repeat psize for i = (read-uleb128+1 stream)
-                        collect (unless (minusp i) (aref strings i)))
+                        collect (unless (minusp i) (aref *strings* i)))
                   'vector))
          (bytecode nil))
     ;; looks like we need to parse the bytecode to find the end reliably...
     (flet ((name ()
              (let ((a (read-uleb128+1 stream)))
-               (unless (minusp a) (aref strings a))))
+               (unless (minusp a) (aref *strings* a))))
            (type ()
              (let ((a (read-uleb128+1 stream)))
-               (unless (minusp a) (aref types a))))
+               (unless (minusp a) (aref *types* a))))
            (u () (read-uleb128 stream))
            (s () (read-sleb128 stream)))
       (setf bytecode
@@ -466,7 +466,7 @@
     (make-instance 'dex-debug-info :start start :parameters params
                                    :bytecode bytecode)))
 
-(defun read-code (method stream strings types)
+(defun read-code (method stream )
   (setf (code method)
         (unless (zerop (code method))
           (file-position stream (code method))
@@ -481,7 +481,7 @@
                             (read-u16 stream)))
                  (tries (read-tries stream try-count))
                  (handlers (when (plusp try-count)
-                             (read-handler-list stream types))))
+                             (read-handler-list stream))))
             (declare (ignore padding))
             (when tries
               (loop for i across tries
@@ -493,11 +493,11 @@
                            :registers registers
                            :ins ins
                            :outs outs
-                           :debug-info (read-debug-info stream strings types)
+                           :debug-info (read-debug-info stream)
                            :tries tries
                            :instructions (unassemble instructions))))))
 
-(defun read-class-data (class stream strings types fields methods prototypes)
+(defun read-class-data (class stream)
   (let ((static-fields (make-array (read-uleb128 stream)))
         (instance-fields (make-array (read-uleb128 stream)))
         (direct-methods (make-array (read-uleb128 stream)))
@@ -507,7 +507,7 @@
     (flet ((read-field (type)
              (let* ((field-id (+ prev-index (read-uleb128 stream)))
                     (flags (read-uleb128 stream))
-                    (field (aref fields field-id)))
+                    (field (aref *fields* field-id)))
                (setf prev-index field-id)
                ;; store the instance in the fields table, since other
                ;; things (annotations etc) reference them through that
@@ -520,7 +520,7 @@
              (let* ((method-id (+ prev-index (read-uleb128 stream)))
                     (flags (read-uleb128 stream))
                     (code (read-uleb128 stream))
-                    (method (aref methods method-id)))
+                    (method (aref *methods* method-id)))
                (setf prev-index method-id)
                (setf (fourth method)
                      (make-instance 'dex-class-method
@@ -543,8 +543,8 @@
       (dotimes (i (length virtual-methods))
         (setf (aref virtual-methods i) (read-method)))
       ;; read the code blocks for each method
-      (map 'nil (lambda (a) (read-code a stream strings types)) direct-methods)
-      (map 'nil (lambda (a) (read-code a stream strings types))
+      (map 'nil (lambda (a) (read-code a stream)) direct-methods)
+      (map 'nil (lambda (a) (read-code a stream))
            virtual-methods))
     (setf (static-fields class) static-fields
           (instance-fields class) instance-fields
@@ -552,17 +552,17 @@
           (virtual-methods class) virtual-methods))
   class)
 
-(defun read-encoded-annotation (stream strings types fields methods)
-  (let ((type (aref types (read-uleb128 stream)))
+(defun read-encoded-annotation (stream)
+  (let ((type (aref *types* (read-uleb128 stream)))
         (size (read-uleb128 stream))
         (a (make-hash-table :test 'equal)))
     (dotimes (i size)
-      (setf (gethash (aref strings (read-uleb128 stream)) a)
-            (read-encoded-value stream strings types fields methods)))
+      (setf (gethash (aref *strings* (read-uleb128 stream)) a)
+            (read-encoded-value stream)))
     ;; fixme: do something with this?
     (list :annotation :type type :annotations a)))
 
-(defun read-encoded-value (stream strings types fields methods)
+(defun read-encoded-value (stream)
   (let* ((arg+type (read-u8 stream))
          (arg (ldb (byte 3 5) arg+type))
          (type (ldb (byte 5 0) arg+type)))
@@ -607,19 +607,19 @@
                     sum (ash (read-u8 stream) (* i 8)))
               (* 8 (- 7 arg)))))
        (#x17 ;; string
-        (aref strings (u32)))
+        (aref *strings* (u32)))
        (#x18 ;; type
-        (aref types (u32)))
+        (aref *types* (u32)))
        (#x19 ;; field
-        (aref fields (u32)))
+        (aref *fields* (u32)))
        (#x1a ;; method
-        (aref methods (u32)))
+        (aref *methods* (u32)))
        (#x1b ;; enum
-        (aref fields (u32)))
+        (aref *fields* (u32)))
        (#x1c ;; array
-        (read-encoded-array stream strings types fields methods ))
+        (read-encoded-array stream))
        (#x1d ;; annotation
-        (read-encoded-annotation stream strings types fields methods ))
+        (read-encoded-annotation stream))
        (#x1e ;; null
         nil)
        (#x1f ;; boolean
@@ -627,17 +627,16 @@
        (t (error "invalid encoded_value? type = #x~2,'0x, arg = ~d" type arg))
        ))))
 
-(defun read-encoded-array (stream strings types fields methods )
+(defun read-encoded-array (stream)
   (let ((size (read-uleb128 stream)))
     (map-into (make-array size)
-              (lambda () (read-encoded-value
-                          stream strings types fields methods)))))
+              (lambda () (read-encoded-value stream)))))
 
 
 (defun decode-visibility (x)
   (ecase x (0 :build) (1 :runtime) (2 :system)))
 
-(defun read-annotation (stream strings types fields methods)
+(defun read-annotation (stream)
   ;; read an annotation_set_item
   (let* ((size (read-u32 stream))
          (offs (read-ub32-vector size stream)))
@@ -647,11 +646,10 @@
            collect (apply 'make-instance 'dex-annotation
                           :visibility (decode-visibility (read-u8 stream))
                           (cdr
-                           (read-encoded-annotation stream strings types
-                                                    fields methods))))
+                           (read-encoded-annotation stream))))
      'vector)))
 
-(defun read-annotations (class stream strings types fields methods )
+(defun read-annotations (class stream)
   ;; decode annotations_directory_item and apply the annotations to
   ;; the parts of a dex-class instance
   (let* ((class-annotations (read-u32 stream))
@@ -668,29 +666,28 @@
     ;; class annotations
     (when (plusp class-annotations)
       (file-position stream class-annotations)
-      (setf (annotations class) (read-annotation stream strings types
-                                                 fields methods)))
+      (setf (annotations class) (read-annotation stream)))
     ;; find the actual annotations, and add to the specified fields,etc
     (loop for (id off) in fa
-          for field = (fourth (aref fields id))
+          for field = (fourth (aref *fields* id))
           do (unless (annotations field)
                (setf (annotations field) (make-array 0 :adjustable t
                                                        :fill-pointer 0)))
              (file-position stream off)
              (vector-push-extend
-              (read-annotation stream strings types fields methods)
+              (read-annotation stream)
               (annotations field)))
     (loop for (id off) in ma
-          for method = (fourth (aref methods id))
+          for method = (fourth (aref *methods* id))
           do (unless (annotations method)
                (setf (annotations method) (make-array 0 :adjustable t
                                                         :fill-pointer 0)))
              (file-position stream off)
              (vector-push-extend
-              (read-annotation stream strings types fields methods)
+              (read-annotation stream)
               (annotations method)))
     (loop for (id off) in pa
-          for method = (fourth (aref methods id))
+          for method = (fourth (aref *methods* id))
           do (unless (parameter-annotations method)
                (setf (parameter-annotations method)
                      (make-array (length (parameters method))
@@ -706,10 +703,10 @@
                                                :fill-pointer 0)))
                          (file-position stream poff)
                          (vector-push-extend
-                          (read-annotation stream strings types fields methods)
+                          (read-annotation stream)
                           (aref (parameter-annotations method) pid)))))))
 
-(defun read-classes (stream count start strings types fields methods prototypes)
+(defun read-classes (stream count start)
   (when (plusp count)
     (file-position stream start)
     (let ((a (make-array count)))
@@ -725,30 +722,29 @@
                              annotations class-data static-values)
             (aref a i)
           (let ((c (make-instance 'dex-class
-                                  :type-name (aref types type)
+                                  :type-name (aref *types* type)
                                   :flags (decode-flags flags *class-flags*)
                                   :superclass (unless (= super +no-index+)
-                                                (aref types super))
+                                                (aref *types* super))
                                   :source-file (unless (= source-file +no-index+)
-                                                 (aref strings source-file)))))
+                                                 (aref *strings* source-file)))))
             (when (plusp interfaces)
               (file-position stream interfaces)
-              (setf (interfaces c) (read-type-list stream types)))
+              (setf (interfaces c) (read-type-list stream)))
             (when (plusp class-data)
               (file-position stream class-data)
-              (read-class-data c stream strings types fields methods prototypes))
+              (read-class-data c stream))
             (when (plusp annotations)
               (file-position stream annotations)
-              (read-annotations c stream strings types fields methods))
+              (read-annotations c stream))
             (when (plusp static-values)
               (file-position stream static-values)
-              (let ((v (read-encoded-array stream strings types fields methods )))
+              (let ((v (read-encoded-array stream)))
                 (map 'nil (lambda (field value)
                             (setf (value field) value))
                      (static-fields c)
                      v)))
-            (setf (aref a i) c)
-)))
+            (setf (aref a i) c))))
       a)))
 
 (defun read-dex-file (stream)
@@ -793,17 +789,13 @@
       (let* (#++(data (read-ub8-vector data-size stream))
              ;; :map (read-map stream map-off)
              (link-table (read-link-table stream link-off link-size))
-             (strings (read-strings stream strings-size strings-off))
-             (types (read-types stream types-size types-off strings))
-             (prototypes (read-prototypes stream
-                                          prototypes-size prototypes-off
-                                          strings types))
-             (fields (read-fields stream fields-size fields-off
-                                  strings types))
-             (methods (read-methods stream methods-size methods-off
-                                    strings types prototypes))
-             (classes (read-classes stream classes-size classes-off
-                                    strings types fields methods prototypes))
+             (*strings* (read-strings stream strings-size strings-off))
+             (*types* (read-types stream types-size types-off))
+             (*prototypes* (read-prototypes stream
+                                            prototypes-size prototypes-off))
+             (*fields* (read-fields stream fields-size fields-off))
+             (*methods* (read-methods stream methods-size methods-off))
+             (classes (read-classes stream classes-size classes-off))
              #++(data (read-data stream data-size data-off))
              )
         (make-instance
@@ -811,11 +803,9 @@
          :version version
          :endian *read-endian*
          :link-table link-table
-         :strings strings
-         :types types
-         :prototypes prototypes
-         :fields fields
-         :methods methods
-         :classes classes
-         ))
-    )))
+         ;:strings strings
+         ;:types types
+         ;:prototypes prototypes
+         ;:fields fields
+         ;:methods methods
+         :classes classes)))))

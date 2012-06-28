@@ -1,6 +1,20 @@
 (in-package #:3b-dex)
 
 
+(defparameter *read-endian* :le)
+
+;; used to track state of .dex file being read/written, so we don't need
+;; to pass the parts to every function that wants to look something up
+;; (here instead of with the .dex file parser, since asm/disasm needs
+;;  to look things up too)
+(defvar *strings*)
+(defvar *types*)
+(defvar *prototypes*)
+(defvar *fields*)
+(defvar *methods*)
+
+
+
 (defun ub8-vector (&key length contents (initial-element 0))
   (cond
     ((and length contents)
@@ -48,8 +62,6 @@
 #++
 (flex:with-input-from-sequence (s #(0 1 127 128 255))
   (loop for a = (ignore-errors (read-s8 s)) while a collect a))
-
-(defparameter *read-endian* :le)
 
 (defun read-u16 (stream)
   (if (eq *read-endian* :le)
