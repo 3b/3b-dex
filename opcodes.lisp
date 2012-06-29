@@ -381,7 +381,7 @@
 ;; not sure if literals should be described by nominal size of the
 ;; expanded value, or by the number of bits actually stored?
 (defop #x12 :const/4 (dest value) 11n (:regn4 :lit32s))
-(defop #x13 :const/16 (dest value) 21s (:regn6 :lit32s))
+(defop #x13 :const/16 (dest value) 21s (:regn8 :lit32s))
 (defop #x14 :const (dest value) 31i (:regn8 :lit32))
 (defop #x15 :const/high16 (dest value) 21h32 (:regn8 :lit32))
 
@@ -822,9 +822,77 @@
                  (t ins))
             collect it)))
 
+(defun use-generic-opcodes (asm)
+  ;; convert things like const/4 to just const
+  (loop for ins in asm
+        for (op . arg) = ins
+        collect
+        (case op
+          ;; not sure if we can combine move and move-wide easily
+          ;; and combining move-object would require type inference
+          ;; in the assembler, so leaving separate for now...
+          ((:move/from16 :move/16)
+           (cons :move arg))
+          ((:move-wide/from16 :move-wide/16)
+           (cons :move-wide arg))
+          ((:move-object/from16 :move-object/16)
+           (cons :move-object arg))
+          ((:const/4 :const/16 :const/high16)
+           (cons :const arg))
+          ((:const-wide/16 :const-wide/32 :const-wide/high16)
+           (cons :const-wide arg))
+          ((:const-string :const-string/jumbo)
+           (cons :const-string arg))
+          ((:goto/16 :goto/32)
+           (cons :goto arg))
+          ;; possibly should combine packed/sparse switch?
+          ;; (assuming previous pass expanded them to both have a list
+          ;;  of keys and targets)
+          #++((:packed-switch :sparse-switch)
+              (cons :switch arg))
+
+          (:add-int/2addr (cons :add-int arg))
+          (:sub-int/2addr (cons :sub-int arg))
+          (:mul-int/2addr (cons :mul-int arg))
+          (:div-int/2addr (cons :div-int arg))
+          (:rem-int/2addr (cons :rem-int arg))
+          (:and-int/2addr (cons :and-int arg))
+          (:or-int/2addr (cons :or-int arg))
+          (:xor-int/2addr (cons :xor-int arg))
+          (:shl-int/2addr (cons :shl-int arg))
+          (:shr-int/2addr (cons :shr-int arg))
+          (:ushr-int/2addr (cons :ushr-int arg))
+          (:add-long/2addr (cons :add-long arg))
+          (:sub-long/2addr (cons :sub-long arg))
+          (:mul-long/2addr (cons :mul-long arg))
+          (:div-long/2addr (cons :div-long arg))
+          (:rem-long/2addr (cons :rem-long arg))
+          (:and-long/2addr (cons :and-long arg))
+          (:or-long/2addr (cons :or-long arg))
+          (:xor-long/2addr (cons :xor-long arg))
+          (:shl-long/2addr (cons :shl-long arg))
+          (:shr-long/2addr (cons :shr-long arg))
+          (:ushr-long/2addr (cons :ushr-long arg))
+          (:add-float/2addr (cons :add-float arg))
+          (:sub-float/2addr (cons :sub-float arg))
+          (:mul-float/2addr (cons :mul-float arg))
+          (:div-float/2addr (cons :div-float arg))
+          (:rem-float/2addr (cons :rem-float arg))
+          (:add-double/2addr (cons :add-double arg))
+          (:sub-double/2addr (cons :sub-double arg))
+          (:mul-double/2addr (cons :mul-double arg))
+          (:div-double/2addr (cons :div-double arg))
+          (:rem-double/2addr (cons :rem-double arg))
+
+          ;; not sure if it is reasonable to merge /lit16 and /lit8 ops
+          ;; since neither is a superset of the other (reg size vs
+          ;; size of constant)
+          (t ins))))
+
 ;; todo: pass to verify all branches/switches have valid labels?
 (defparameter *disassembler-passes* '(expand-string/type/etc-refs
-                                      add-labels))
+                                      add-labels
+                                      use-generic-opcodes))
 
 (defun unassemble (code &key (passes *disassembler-passes*))
   (loop with asm
@@ -850,18 +918,24 @@
 
 
 ;;; assembler passes
-;;  tree-shaker?
 ;;  collect strings/methods/fields/classes/etc
 ;;  build tables (sort, etc)
 ;;  insert table refs, assign string instructions
 ;;  assign sized instructions
 ;;     ex const ->const/4, const/16, etc
-;;  resolve jumps:
-;;    calculate min/max branch distances
-;;    assign specific instruction where min/max are in same range
-;;    recalculate and assign until no more unassigned, or still
-;;      can't decide size for all
-;;      (in which case just assign all as larger size)
+;;     - selection depends on register index in addition to size of
+;;       any immediate values
+;;     (may expand to more than 1 instruction, ex :add-int/lit
+;;      might need to be a :const + :add-int?
+;;  ?resolve jumps:
+;;  ?  calculate min/max branch distances
+;;  ?  assign specific instruction where min/max are in same range
+;;  ?  recalculate and assign until no more unassigned, or still
+;;  ?    can't decide size for all
+;;  ?    (in which case just assign all as larger size)
+;;  possibly easier to just select jumps instructions based on max size,
+;;    then go back and fill in actual size, even if it happens to fit
+;;    in next smaller opcode size?
 ;; build fill-array-data tables, packed/sparse switch tables, and
 ;;   assign locations to instructions
 ;; count registers used?
