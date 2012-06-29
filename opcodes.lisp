@@ -1,7 +1,10 @@
 (in-package #:3b-dex)
 
-(defparameter *opcodes* (make-array 256 :initial-element nil))
-(defparameter *opcode-names* (make-hash-table))
+;; mapping of numbers to names
+(defparameter *opcode-index* (make-array 256 :initial-element nil))
+;; actual opcode definitions (indexed by name rather than number so we
+;; can mix in pseudo-ops and higher-level ops as well
+(defparameter *opcodes* (make-hash-table))
 
 (defparameter *instruction-formats* (make-hash-table))
 
@@ -15,7 +18,7 @@
       (progn (write-byte (ldb (byte 8 0) x) stream)
              (write-byte (ldb (byte 0 0) x) stream))))
 
-(defmacro deformat (format arglist &key read write)
+(defmacro deformat (format arglist &key read write (size (digit-char-p (char (string format) 0))))
   ;; assuming a u-b-16 stream for now, since we are probably
   ;; reading from code already loaded into memory by .dex decoder
   ;; todo: load directly from an array
@@ -29,7 +32,8 @@
                         (declare (ignorable name op))
                         (destructuring-bind ,arglist args
                           (flet ((out (x) (write-byte x stream)))
-                            ,write))))))
+                            ,write)))
+               :size ,size)))
 ;; :read is a form that returns a list of the form (:op-name args ...)
 ;;   given the NAME of the opcode being read, the first word of the
 ;;   instruction in OP, and a function NEXT to call to read more
@@ -103,6 +107,12 @@
                        for shift = (- 16 size) then (- shift size)
                        collect `(ash (ldb (byte ,size 0) ,var) ,shift))))))
 
+(defun sign-extend8 (b)
+  (if (logbitp 7 b) (dpb b (byte 8 0) -1) b))
+(defun sign-extend16 (b)
+  (if (logbitp 15 b) (dpb b (byte 16 0) -1) b))
+(defun sign-extend32 (b)
+  (if (logbitp 31 b) (dpb b (byte 32 0) -1) b))
 
 (deformat 12x (a b)
   :read (list name (ldb (byte 4 8) op) (ldb (byte 4 12) op))
@@ -118,11 +128,11 @@
   :write (out (word a 8 op 8)))
 
 (deformat 10t (a)
-  :read (list name (ldb (byte 8 8) op))
+  :read (list name (sign-extend8 (ldb (byte 8 8) op)))
   :write (out (word a 8 op 8)))
 
 (deformat 20t (a)
-  :read (list name (next))
+  :read (list name (sign-extend16 (next)))
   :write (progn (out (word 0 8 op 8)) (out (word a 16))))
 
 (deformat 20bc (a b)
@@ -134,7 +144,7 @@
   :write (progn (out (word a 8 op 8)) (out (word b 16))))
 
 (deformat 21t (a b)
-  :read (list name (ldb (byte 8 8) op) (next))
+  :read (list name (ldb (byte 8 8) op) (sign-extend16 (next)))
   :write (progn (out (word a 8 op 8)) (out (word b 16))))
 
 (deformat 21s (a b)
@@ -170,7 +180,8 @@
                 (out (word c 8 b 8))))
 
 (deformat 22t (a b c)
-  :read (list name (ldb (byte 4 8) op) (ldb (byte 4 12) op) (next))
+  :read (list name (ldb (byte 4 8) op) (ldb (byte 4 12) op)
+              (sign-extend16 (next)))
   :write (progn (out (word b 4 a 4 op 8))
                 (out (word c 16))))
 
@@ -190,7 +201,7 @@
                 (out (word c 16))))
 
 (deformat 30t (a)
-  :read (list name (logior (next) (ash (next) 16)))
+  :read (list name (sign-extend32 (logior (next) (ash (next) 16))))
   :write (progn (out (word 0 8 op 8))
                 (out (ldb (byte 16 0) a))
                 (out (ldb (byte 16 16) a))))
@@ -208,7 +219,8 @@
                 (out (ldb (byte 16 16) b))))
 
 (deformat 31t (a b)
-  :read (list name (ldb (byte 8 8) op) (logior (next) (ash (next) 16)))
+  :read (list name (ldb (byte 8 8) op)
+              (sign-extend32 (logior (next) (ash (next) 16))))
   :write (progn (out (word a 8 op 8))
                 (out (ldb (byte 16 0) b))
                 (out (ldb (byte 16 16) b))))
@@ -307,15 +319,22 @@
   ;; slime autodoc though...
   `(progn
      (when (and (not (eq ,name :unused))
-                (or (aref *opcodes* ,opcode)
-                    (gethash ,name *opcode-names*)))
+                (or (aref *opcode-index* ,opcode)
+                    (gethash ,name *opcodes*)))
        (warn "redefining opcode ~2,'0x (~s) from ~2,'0x, ~s~%"
              ,opcode ',name
-             (gethash ',name *opcode-names*)
-             (aref *opcodes* ,opcode)))
-     (setf (aref *opcodes* ,opcode)
-           (list :code ,opcode :name ',name :format ',format :args ',args :types ',types))
-     (setf (gethash ',name *opcode-names*) ,opcode)))
+             (gethash ',name *opcodes*)
+             (aref *opcode-index* ,opcode)))
+     (setf (aref *opcode-index* ,opcode)
+           ',name)
+     (setf (gethash ',name *opcodes*)
+           (list :code ,opcode :name ',name :format ',format :args ',args
+                 :types ',types
+                 :size (lambda (op &rest args)
+                         (declare (ignore op args))
+                         (let ((s (getf (gethash ',format *instruction-formats*)
+                                        :size)))
+                           (values s s)))))))
 
 ;; there are some embedded data things that start with NOP, so can't
 ;; use 10x format directly
@@ -401,8 +420,8 @@
 (defop #x29 :goto/16 (branch) 20t (:branch16))
 (defop #x2a :goto/32 (branch) 30t (:branch32))
 
-(defop #x2b :packed-switch (test-reg &rest?) 31t (:regn8 :packed-switch))
-(defop #x2c :sparse-switch (test-reg &rest?) 31t (:regn8 :sparse-switch))
+(defop #x2b :packed-switch (test-reg targets) 31t (:regn8 :packed-switch))
+(defop #x2c :sparse-switch (test-reg targets) 31t (:regn8 :sparse-switch))
 
 (defop #x2d :cmpl-float (dest first second) 23x (:regn8 :regn8 :regn8))
 (defop #x2e :cmpg-float (dest first second) 23x (:regn8 :regn8 :regn8))
@@ -648,9 +667,41 @@
 (defop #xfd :unused () 10xe ())
 (defop #xff :unused () 10xe ())
 
+;;; pseudo-ops
+(defmacro defop* (name args &key format types size)
+  `(progn
+     (when (gethash ,name *opcodes*)
+       (warn "redefining pseudo-opcode ~s (~s)~%"
+             ',name (gethash ',name *opcodes*)))
+     (setf (gethash ',name *opcodes*)
+           (list :code NIL :name ',name :format ',format :args ',args
+                 :types ',types
+                 :size ,size))))
 
+(defop* :packed-switch-payload (&key first-key targets)
+  :size (lambda (op &key first-key targets)
+          (declare (ignore op first-key))
+          (let ((s (+ 1 1 2 (* 2 (length targets))))) (values s s))))
 
-(defun unassemble (code)
+(defop* :sparse-switch-payload (&key keys targets)
+  :size (lambda (op &key keys targets)
+          (declare (ignore op))
+          (let ((s (+ 1 1 (* 2 (length keys)) (* 2 (length targets)))))
+            (values s s))))
+
+(defop* :fill-array-data-payload (&key element-width data)
+  :size (lambda (op &key element-width data)
+          (declare (ignore op))
+          (let ((s (+ 1 1 2 (floor (1+ (* (length data) element-width))
+                                   2))))
+            (values s s))))
+
+(defop* :label (name)
+  :size (lambda (name) (declare (ignore name)) (values 0 0)))
+
+;;; disassembler passes
+(defun expand-string/type/etc-refs (asm)
+  ;; look up string/type/etc indices in the .dex file's tables if available
   (flet ((lookup (type value)
            (case type
              (:string
@@ -658,27 +709,160 @@
              ((:type :array :class)
               (if (boundp '*types*) (aref *types* value) value))
              (:method
-              (if (boundp '*methods*) (aref *methods* value) value))
+                 (if (boundp '*methods*) (aref *methods* value) value))
              (:field
               (if (boundp '*fields*) (aref *fields* value) value))
              (t value))))
-    (flex:with-input-from-sequence (s code)
-      (loop for instruction = (read-byte s nil)
-            for op = (when instruction (ldb (byte 8 0) instruction))
-            for opdef = (when op (aref *opcodes* op))
-            for op-name = (getf opdef :name)
-            for format = (getf opdef :format)
-            for reader = (when op
-                           (getf (gethash format *instruction-formats*) :read))
-            while instruction
-            collect (let ((decoded (funcall reader op-name instruction s))
-                          (types (getf opdef :types)))
-                      (cons (car decoded)
-                            (loop for arg in (cdr decoded)
-                                  for i from 0
-                                  for type = (nth i types)
-                                  collect (lookup type arg))))))))
+    (loop for (op . args) in asm
+          for types = (getf (gethash op *opcodes*)
+                            :types)
+          collect
+          (cons op
+                (loop for arg in args
+                      for i from 0
+                      for type = (nth i types)
+                      collect (lookup type arg))))))
+
+(defun add-labels (asm)
+  ;; convert branch offsets to labels, and add labels to code
+
+  (let ((branches (make-hash-table))
+        (name-counters (make-hash-table))
+        ;; (cons->address and address->cons)
+        (addresses (make-hash-table)))
+    ;; we do this in 3 passes just to keep things simpler, since switch
+    ;; ops need to dereference twice to get actual destination addresses
+    ;; (and there doesn't seem to be anything in the spec preventing 2
+    ;;  switches from sharing an offset table)
+
+    ;; calculate PC of each instruction
+    ;; - probably should have tracked this when originally decoding the
+    ;;   bytecode, but there isn't really anywhere convenient to store it
+    (flet ((align (op value)
+             ;; fixme: make this configurable
+             (if (member op '(:packed-switch-payload :sparse-switch-payload
+                              :fill-array-data-payload))
+                 ;; nop tables are aligned to even instructions...
+                 (+ value (logand value 1))
+                 value)))
+      (loop for pc = 0 then (+ pc (apply (getf (gethash op *opcodes*) :size)
+                                         ins))
+            for ins in asm
+            for op = (car ins)
+            do (setf pc (align op pc))
+               (setf (gethash ins addresses) pc
+                     (gethash pc addresses) ins)))
+
+    ;; loop through instructions, finding branches, and calculating dest
+    (labels ((add-branch (type dest &optional index2)
+               (let* ((index (incf (gethash type name-counters 0)))
+                      (name (make-symbol (format nil "~a-~a~@[-~a~]"
+                                                 type index index2))))
+                 (setf (gethash dest branches) name)))
+             (add-switch (type base targets)
+               (loop for i from 0
+                     for off across targets
+                     do (add-branch type (+ base off) i))))
+      (loop for ins in asm
+            for pc = (gethash ins addresses)
+            for (op . arg) = ins
+            do (case op
+                 (:packed-switch
+                  (let ((table (gethash (+ pc (second arg)) addresses)))
+                    (check-type table (cons (eql :packed-switch-payload)))
+                    (add-switch op pc (getf (cdr table) :targets))))
+                 (:sparse-switch
+                  (let ((table (gethash (+ pc (second arg)) addresses)))
+                    (check-type table (cons (eql :sparse-switch-payload)))
+                    (add-switch op pc (getf (cdr table) :targets))))
+                 ((:goto :goto/16 :goto/32)
+                  (add-branch :goto (+ pc (first arg))))
+                 ((:if-eq :if-ne :if-lt :if-le :if-gt :if-ge)
+                  (add-branch op (+ pc (third arg))))
+                 ((:if-eqz :if-nez :if-ltz :if-lez :if-gtz :if-gez)
+                  (add-branch op (+ pc (second arg)))))))
+
+    ;; finally, add labels and replace branch offsets, and extract jump tables
+    ;; and array tables
+    (loop for ins in asm
+          for pc = (gethash ins addresses)
+          for (op . arg) = ins
+          for label = (gethash pc branches)
+          when label
+            collect (list :label label)
+          when (case op
+                 (:fill-array
+                  (let ((table (gethash (+ pc (second arg)) addresses)))
+                    (list :fill-array (cdr table))))
+                 ((:fill-array-data-payload
+                   :packed-switch-payload :sparse-switch-payload)
+                  nil)
+                 (:packed-switch
+                  (let ((table (gethash (+ pc (second arg)) addresses)))
+                    (list
+                     :packed-switch
+                     (loop for key from (getf (cdr table) :first-key)
+                           for off across (getf (cdr table) :targets)
+                           collect (cons key (gethash (+ pc off) branches))))))
+                 (:sparse-switch
+                  (let ((table (gethash (+ pc (second arg)) addresses)))
+                    (list
+                     :sparse-switch
+                     (loop for key across (getf (cdr table) :keys)
+                           for off across (getf (cdr table) :targets)
+                           collect (cons key (gethash (+ pc off) branches))))))
+                 ((:goto :goto/16 :goto/32)
+                  (list :goto (gethash (+ pc (first arg)) branches)))
+                 ((:if-eq :if-ne :if-lt :if-le :if-gt :if-ge)
+                  (list op (first arg) (second arg)
+                        (gethash (+ pc (third arg)) branches)))
+                 ((:if-eqz :if-nez :if-ltz :if-lez :if-gtz :if-gez)
+                  (list op (first arg)
+                        (gethash (+ pc (second arg)) branches)))
+                 (t ins))
+            collect it)))
+
+;; todo: pass to verify all branches/switches have valid labels?
+(defparameter *disassembler-passes* '(expand-string/type/etc-refs
+                                      add-labels))
+
+(defun unassemble (code &key (passes *disassembler-passes*))
+  (loop with asm
+          = (flex:with-input-from-sequence (s code)
+              (loop for instruction = (read-byte s nil)
+                    for op = (when instruction (ldb (byte 8 0) instruction))
+                    for opdef = (when op (gethash (aref *opcode-index* op)
+                                                  *opcodes*))
+                    for op-name = (getf opdef :name)
+                    for format = (getf opdef :format)
+                    for reader = (when format
+                                   (getf (gethash format *instruction-formats*)
+                                         :read))
+                    while instruction
+                    collect (funcall reader op-name instruction s)))
+        for pass in passes
+        do (setf asm (funcall pass asm))
+        finally (return asm)))
 
 
 #++
 (unassemble #(26 2536 4209 1403 0 14))
+
+
+;;; assembler passes
+;;  tree-shaker?
+;;  collect strings/methods/fields/classes/etc
+;;  build tables (sort, etc)
+;;  insert table refs, assign string instructions
+;;  assign sized instructions
+;;     ex const ->const/4, const/16, etc
+;;  resolve jumps:
+;;    calculate min/max branch distances
+;;    assign specific instruction where min/max are in same range
+;;    recalculate and assign until no more unassigned, or still
+;;      can't decide size for all
+;;      (in which case just assign all as larger size)
+;; build fill-array-data tables, packed/sparse switch tables, and
+;;   assign locations to instructions
+;; count registers used?
+;; encode to u16s
