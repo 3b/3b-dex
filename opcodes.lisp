@@ -107,19 +107,23 @@
                        for shift = (- 16 size) then (- shift size)
                        collect `(ash (ldb (byte ,size 0) ,var) ,shift))))))
 
+(defun sign-extend4 (b)
+  (if (logbitp 3 b) (dpb b (byte 4 0) -1) b))
 (defun sign-extend8 (b)
   (if (logbitp 7 b) (dpb b (byte 8 0) -1) b))
 (defun sign-extend16 (b)
   (if (logbitp 15 b) (dpb b (byte 16 0) -1) b))
 (defun sign-extend32 (b)
   (if (logbitp 31 b) (dpb b (byte 32 0) -1) b))
+(defun sign-extend64 (b)
+  (if (logbitp 63 b) (dpb b (byte 64 0) -1) b))
 
 (deformat 12x (a b)
   :read (list name (ldb (byte 4 8) op) (ldb (byte 4 12) op))
   :write (out (word b 4 a 4 op 8)))
 
 (deformat 11n (a b)
-  :read (list name (ldb (byte 4 8) op) (ldb (byte 4 12) op))
+  :read (list name (ldb (byte 4 8) op) (sign-extend4 (ldb (byte 4 12) op)))
   :write (out (word b 4 a 4 op 8)))
 
 
@@ -148,16 +152,16 @@
   :write (progn (out (word a 8 op 8)) (out (word b 16))))
 
 (deformat 21s (a b)
-  :read (list name (ldb (byte 8 8) op) (next))
+  :read (list name (ldb (byte 8 8) op) (sign-extend16 (next)))
   :write (progn (out (word a 8 op 8)) (out (word b 16))))
 
 ;; docs don't distinguish between 32 and 64 bit versions, so split 21h
 (deformat 21h32 (a b)
-  :read (list name (ldb (byte 8 8) op) (ash (next) 16))
+  :read (list name (ldb (byte 8 8) op) (sign-extend32 (ash (next) 16)))
   :write (progn (out (word a 8 op 8)) (out (word (ash b -16) 16))))
 
 (deformat 21h64 (a b)
-  :read (list name (ldb (byte 8 8) op) (ash (next) 48))
+  :read (list name (ldb (byte 8 8) op) (sign-extend64 (ash (next) 48)))
   :write (progn (out (word a 8 op 8)) (out (word (ash b -48) 16))))
 
 ;; probably need to split this into type/field/string specific versions?
@@ -218,12 +222,18 @@
                 (out (ldb (byte 16 0) b))
                 (out (ldb (byte 16 16) b))))
 
-(deformat 31t (a b)
+(deformat 31t (a b1)
+  ;; b1 can be a signed or unsigned 32 bit int, or a single float
+  ;; we always decode as unsigned int for now though, since no way
+  ;; to tell which it is
   :read (list name (ldb (byte 8 8) op)
               (sign-extend32 (logior (next) (ash (next) 16))))
-  :write (progn (out (word a 8 op 8))
-                (out (ldb (byte 16 0) b))
-                (out (ldb (byte 16 16) b))))
+  :write (let ((b (if (floatp b1)
+                      (ieee-floats:encode-float32 b1)
+                      b1)))
+           (out (word a 8 op 8))
+           (out (ldb (byte 16 0) b))
+           (out (ldb (byte 16 16) b))))
 
 (deformat 31c (a b)
   :read (list name (ldb (byte 8 8) op) (logior (next) (ash (next) 16)))
@@ -244,10 +254,10 @@
           (list* name b (subseq (list c d e f g) 0 a)))
   :write (progn (out (word (length rest) 4 (or (fifth rest) 0) 4 op 8))
                 (out (word b 16))
-                (out (word (or (first rest) 0) 4
-                           (or (second rest) 0) 4
+                (out (word (or (fourth rest) 0) 4
                            (or (third rest) 0) 4
-                           (or (fourth rest) 0) 4))))
+                           (or (second rest) 0) 4
+                           (or (first rest) 0) 4))))
 
 ;; fixme: combine some of these formats that have the same encoders/decoders?
 (deformat 35ms (b &rest rest) ;; A is implicit in length of REST
@@ -302,16 +312,25 @@
                 (out (word b 16))
                 (out (word c 16))))
 
-
-(deformat 51l (a b)
+(deformat 51l (a b1)
+  ;; b1 can be a signed or unsigned 64 bit int, or a double float
+  ;; we always decode as unsigned int for now though, since no way
+  ;; to tell which it is
   :read (list name (ldb (byte 8 8) op)
               (logior (next) (ash (next) 16)
                       (ash (next) 32) (ash (next) 48)))
-  :write (progn (out (word a 8 op 8))
-                (out (ldb (byte 16 0) b))
-                (out (ldb (byte 16 16) b))
-                (out (ldb (byte 16 32) b))
-                (out (ldb (byte 16 48) b))))
+  :write (let ((b (etypecase b1
+                    (single-float
+                     (ieee-floats:encode-float32 b1))
+                    (double-float
+                     (ieee-floats:encode-float64 b1))
+                    (integer
+                     b1))))
+           (out (word a 8 op 8))
+           (out (ldb (byte 16 0) b))
+           (out (ldb (byte 16 16) b))
+           (out (ldb (byte 16 32) b))
+           (out (ldb (byte 16 48) b))))
 
 (integer-length 16)
 (defmacro defop (opcode name args format types)
@@ -471,7 +490,7 @@
 (defop #x4a :aget-short   (dest array index) 23x (:regn8 :rega8 :regn8))
 
 (defop #x4b :aput         (src array index) 23x (:regn8 :rega8 :regn8))
-(defop #x4c :aput-wide    (src array index) 22x (:regp8 :rega8 :regn8))
+(defop #x4c :aput-wide    (src array index) 23x (:regp8 :rega8 :regn8))
 (defop #x4d :aput-object  (src array index) 23x (:rego8 :rega8 :regn8))
 (defop #x4e :aput-boolean (src array index) 23x (:regn8 :rega8 :regn8))
 (defop #x4f :aput-byte    (src array index) 23x (:regn8 :rega8 :regn8))
@@ -739,7 +758,10 @@
                          (evenp element-width)))
              (if (= element-width 1)
                  (loop for i below (length data) by 2
-                       do (out (word (aref data (1+ i)) 8 (aref data i) 8)))
+                       do (out (word (if (array-in-bounds-p data (1+ i))
+                                         (aref data (1+ i))
+                                         0) 8
+                                     (aref data i) 8)))
                  (loop for i across data
                        do (loop for o below (floor element-width 2)
                                 do (out (ldb (byte 16 (* o 16)) i)))))))
@@ -756,17 +778,27 @@
 ;;; disassembler passes
 (defun expand-string/type/etc-refs (asm)
   ;; look up string/type/etc indices in the .dex file's tables if available
-  (flet ((lookup (type value)
-           (case type
-             (:string
-              (if (boundp '*strings*) (aref *strings* value) value))
-             ((:type :array :class)
-              (if (boundp '*types*) (aref *types* value) value))
-             (:method
-                 (if (boundp '*methods*) (aref *methods* value) value))
-             (:field
-              (if (boundp '*fields*) (aref *fields* value) value))
-             (t value))))
+  (labels ((fix-method (m)
+             ;; we can't just use class + method names, since might
+             ;; have 2 with same name and different signatures...
+             m #++(list (first m) (third m)))
+           (fix-field (f)
+             f (list (first f) (third f)))
+           (lookup (type value)
+             (case type
+               (:string
+                   (if (boundp '*strings*) (aref *strings* value) value))
+                  ((:type :array :class)
+                   (if (boundp '*types*) (aref *types* value) value))
+                  (:method
+                      (if (boundp '*methods*)
+                          (fix-method (aref *methods* value))
+                          value))
+                  (:field
+                   (if (boundp '*fields*)
+                       (fix-field (aref *fields* value))
+                       value))
+                  (t value))))
     (loop for (op . args) in asm
           for types = (getf (gethash op *opcodes*)
                             :types)
@@ -838,16 +870,24 @@
 
     ;; finally, add labels and replace branch offsets, and extract jump tables
     ;; and array tables
-    (loop for ins in asm
+    (loop for remaining on asm
+          for ins = (car remaining)
           for pc = (gethash ins addresses)
           for (op . arg) = ins
           for label = (gethash pc branches)
           when label
             collect (list :label label)
           when (case op
+                 (:nop
+                  ;; assume :nop before a nop-table is just padding and drop it
+                  (unless (member (caadr remaining)
+                                  '(:fill-array-data-payload
+                                    :sparse-switch-payload
+                                    :packed-switch-payload))
+                    ins))
                  (:fill-array
                   (let ((table (gethash (+ pc (second arg)) addresses)))
-                    (list :fill-array (cdr table))))
+                    (list* :fill-array  (first arg) (cdr table))))
                  ((:fill-array-data-payload
                    :packed-switch-payload :sparse-switch-payload)
                   nil)
@@ -944,7 +984,8 @@
           #++((:packed-switch :sparse-switch)
               (cons :switch arg))
           (#.(mapcar 'car +2addr-opcodes+)
-           (cons (gethash op *2addr-map*) arg))
+           (list (gethash op *2addr-map*)
+                 (first arg) (first arg) (second arg)))
 
           ;; not sure if it is reasonable to merge /lit16 and /lit8 ops
           ;; since neither is a superset of the other (reg size vs
@@ -1005,8 +1046,8 @@
          (s4p (x) (typep x '(signed-byte 4)))
          #++(s8p (x) (typep x '(signed-byte 8)))
          (s16p (x) (typep x '(signed-byte 16)))
-         (s32p (x) (typep x '(signed-byte 16)))
-         (s64p (x) (typep x '(signed-byte 16)))
+         (s32p (x) (typep x '(signed-byte 32)))
+         (s64p (x) (typep x '(signed-byte 64)))
          (cant-encode (x &optional reason)
            (error "can't encode ~s~@[, ~s~]" x reason)))
     (loop with from16 = (alexandria:alist-hash-table
@@ -1041,6 +1082,12 @@
                 (cons :const/high16 arg))
                ((and (u8p (first arg)) (s32p (second arg)))
                 (cons :const arg))
+               ;; we can also encode single-float or unsigned int,
+               ;; though we won't decode them properly
+               ((and (u8p (first arg)) (u32p (second arg)))
+                (cons :const arg))
+               ((and (u8p (first arg)) (typep (second arg) 'single-float))
+                (cons :const arg))
                (t (cant-encode ins "invalid register index or immediate value too large"))))
             (:const-wide
              (cond
@@ -1067,8 +1114,8 @@
             (#.(mapcar 'cdr +2addr-opcodes+)
              ;; use /2addr version when src1 nd dest are same, and both are u4
              (if (and (= (first arg) (second arg))
-                      (u4p (first arg)) (u4p (second arg)))
-                 (cons (gethash op *2addr-map*) arg)
+                      (u4p (first arg)) (u4p (third arg)))
+                 (cons (gethash op *2addr-map*) (cdr arg))
                  ins))
 
             ;; not sure if it is reasonable to merge /lit16 and /lit8 ops
@@ -1107,28 +1154,29 @@
 
       ;; second pass: assign instructions to GOTOs, update labels with
       ;; actual addresses
-      (loop with pc = 0
-            for instruction in asm
-            for (name . arg) = instruction
-            for opdef = (gethash name *opcodes*)
-            for size = (getf opdef :size)
-            ;; everything else should have a fixed size by now,
-            ;; just need to handle GOTO by hand
-            when (eq name :label)
-              do (setf (gethash (first arg) labels) (list pc pc))
-            when (eq name :goto)
-              collect (destructuring-bind (lmin lmax)
-                          (gethash (first arg) labels)
-                        (let ((d (ilmax (- pc lmin) (- pc lmax))))
-                          (cond
-                            ((s8p d) (incf pc 1) instruction)
-                            ((s16p d) (incf pc 2) (cons :goto/16 arg))
-                            ((s32p d) (incf pc 3) (cons :goto/32 arg))
-                            ;; invalid, let final pass deal with it
-                            (t (error "fpp!") instruction))))
-            else
-              do (incf pc (apply size instruction))
-              and collect instruction)
+      (setf asm
+            (loop with pc = 0
+                  for instruction in asm
+                  for (name . arg) = instruction
+                  for opdef = (gethash name *opcodes*)
+                  for size = (getf opdef :size)
+                  ;; everything else should have a fixed size by now,
+                  ;; just need to handle GOTO by hand
+                  when (eq name :label)
+                    do (setf (gethash (first arg) labels) (list pc pc))
+                  when (eq name :goto)
+                    collect (destructuring-bind (lmin lmax)
+                                (gethash (first arg) labels)
+                              (let ((d (ilmax (- lmin pc) (- lmax pc))))
+                                (cond
+                                  ((s8p d) (incf pc 1) instruction)
+                                  ((s16p d) (incf pc 2) (cons :goto/16 arg))
+                                  ((s32p d) (incf pc 3) (cons :goto/32 arg))
+                                  ;; invalid, let final pass deal with it
+                                  (t instruction))))
+                  else
+                    do (incf pc (apply size instruction))
+                    and collect instruction))
       ;; 3rd pass: assign addresses, store refs to array/switch instructions
       ;; build tables for array/switches, add to end and update array/switches
       (let ((tables nil)
@@ -1168,13 +1216,15 @@
                do (incf pc (apply size instruction)))
          (loop for (from instruction) in (reverse tables)
                for (op . args) = instruction
+               when (oddp pc)
+                 do (incf pc) ;; align pc if needed
+                 and collect '(:nop)
                collect
                (progn
-                 (incf pc (logand pc 1)) ;; align pc if needed
                  (case op
                    (:fill-array
                     (destructuring-bind (&key element-width data) (cdr args)
-                      (setf (third instruction) (- pc from))
+                      (setf (cddr instruction) (list (- pc from)))
                       (let ((new (list :fill-array-data-payload
                                        :element-width element-width
                                        :data data)))
