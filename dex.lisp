@@ -234,8 +234,10 @@
    ;; sequence of 'try' block definitions, including catch handlers
    (tries :initarg :tries :accessor tries)
    (debug-info :initarg :debug-info :accessor debug-info)
-   ;; sequence of u16 instructions
-   (instructions :initarg :instructions :accessor instructions)))
+   ;; asm code for the method
+   (instructions :initarg :instructions :accessor instructions)
+   ;; original instruction data for debugging
+   (%inst :initarg %inst)))
 
 (defclass dex-class-method ()
   ;; not storing class for now
@@ -466,7 +468,8 @@
     (make-instance 'dex-debug-info :start start :parameters params
                                    :bytecode bytecode)))
 
-(defun read-code (method stream )
+
+(defun read-code (method stream)
   (setf (code method)
         (unless (zerop (code method))
           (file-position stream (code method))
@@ -495,7 +498,8 @@
                            :outs outs
                            :debug-info (read-debug-info stream)
                            :tries tries
-                           :instructions (unassemble instructions))))))
+                           :instructions (unassemble instructions)
+                           '%inst instructions)))))
 
 (defun read-class-data (class stream)
   (let ((static-fields (make-array (read-uleb128 stream)))
@@ -778,6 +782,7 @@
          (classes-off (read-u32 stream))
          (data-size (read-u32 stream))
          (data-off (read-u32 stream)))
+    (declare (ignorable checksum signature file-size header-size map-off))
     ;; possibly need to swap byte order of file-size, header-size if we
     ;; got a big-endian file?
     (when (and version
@@ -798,14 +803,18 @@
              (classes (read-classes stream classes-size classes-off))
              #++(data (read-data stream data-size data-off))
              )
-        (make-instance
-         'dex-file
-         :version version
-         :endian *read-endian*
-         :link-table link-table
-         ;:strings strings
-         ;:types types
-         ;:prototypes prototypes
-         ;:fields fields
-         ;:methods methods
-         :classes classes)))))
+        (values
+         (make-instance
+          'dex-file
+          :version version
+          :endian *read-endian*
+          :link-table link-table
+          ;; :strings strings
+          ;; :types types
+          ;; :prototypes prototypes
+          ;; :fields fields
+          ;; :methods methods
+          :classes classes)
+         ;; returning tables as extra values for debugging for now...
+         *strings* *types* *methods* *prototypes* *fields* )))))
+
