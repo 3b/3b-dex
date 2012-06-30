@@ -822,6 +822,45 @@
                  (t ins))
             collect it)))
 
+(alexandria:define-constant +2addr-opcodes+
+    '((:add-int/2addr . :add-int)
+      (:sub-int/2addr . :sub-int)
+      (:mul-int/2addr . :mul-int)
+      (:div-int/2addr . :div-int)
+      (:rem-int/2addr . :rem-int)
+      (:and-int/2addr . :and-int)
+      (:or-int/2addr . :or-int)
+      (:xor-int/2addr . :xor-int)
+      (:shl-int/2addr . :shl-int)
+      (:shr-int/2addr . :shr-int)
+      (:ushr-int/2addr . :ushr-int)
+      (:add-long/2addr . :add-long)
+      (:sub-long/2addr . :sub-long)
+      (:mul-long/2addr . :mul-long)
+      (:div-long/2addr . :div-long)
+      (:rem-long/2addr . :rem-long)
+      (:and-long/2addr . :and-long)
+      (:or-long/2addr . :or-long)
+      (:xor-long/2addr . :xor-long)
+      (:shl-long/2addr . :shl-long)
+      (:shr-long/2addr . :shr-long)
+      (:ushr-long/2addr . :ushr-long)
+      (:add-float/2addr . :add-float)
+      (:sub-float/2addr . :sub-float)
+      (:mul-float/2addr . :mul-float)
+      (:div-float/2addr . :div-float)
+      (:rem-float/2addr . :rem-float)
+      (:add-double/2addr . :add-double)
+      (:sub-double/2addr . :sub-double)
+      (:mul-double/2addr . :mul-double)
+      (:div-double/2addr . :div-double)
+      (:rem-double/2addr . :rem-double))
+  :test 'equal)
+
+(defparameter *2addr-map*
+  (alexandria:alist-hash-table (loop for (a . b) in +2addr-opcodes+
+                                     collect (cons a b)
+                                     collect (cons b a))))
 (defun use-generic-opcodes (asm)
   ;; convert things like const/4 to just const
   (loop for ins in asm
@@ -850,39 +889,8 @@
           ;;  of keys and targets)
           #++((:packed-switch :sparse-switch)
               (cons :switch arg))
-
-          (:add-int/2addr (cons :add-int arg))
-          (:sub-int/2addr (cons :sub-int arg))
-          (:mul-int/2addr (cons :mul-int arg))
-          (:div-int/2addr (cons :div-int arg))
-          (:rem-int/2addr (cons :rem-int arg))
-          (:and-int/2addr (cons :and-int arg))
-          (:or-int/2addr (cons :or-int arg))
-          (:xor-int/2addr (cons :xor-int arg))
-          (:shl-int/2addr (cons :shl-int arg))
-          (:shr-int/2addr (cons :shr-int arg))
-          (:ushr-int/2addr (cons :ushr-int arg))
-          (:add-long/2addr (cons :add-long arg))
-          (:sub-long/2addr (cons :sub-long arg))
-          (:mul-long/2addr (cons :mul-long arg))
-          (:div-long/2addr (cons :div-long arg))
-          (:rem-long/2addr (cons :rem-long arg))
-          (:and-long/2addr (cons :and-long arg))
-          (:or-long/2addr (cons :or-long arg))
-          (:xor-long/2addr (cons :xor-long arg))
-          (:shl-long/2addr (cons :shl-long arg))
-          (:shr-long/2addr (cons :shr-long arg))
-          (:ushr-long/2addr (cons :ushr-long arg))
-          (:add-float/2addr (cons :add-float arg))
-          (:sub-float/2addr (cons :sub-float arg))
-          (:mul-float/2addr (cons :mul-float arg))
-          (:div-float/2addr (cons :div-float arg))
-          (:rem-float/2addr (cons :rem-float arg))
-          (:add-double/2addr (cons :add-double arg))
-          (:sub-double/2addr (cons :sub-double arg))
-          (:mul-double/2addr (cons :mul-double arg))
-          (:div-double/2addr (cons :div-double arg))
-          (:rem-double/2addr (cons :rem-double arg))
+          (#.(mapcar 'car +2addr-opcodes+)
+           (cons (gethash op *2addr-map*) arg))
 
           ;; not sure if it is reasonable to merge /lit16 and /lit8 ops
           ;; since neither is a superset of the other (reg size vs
@@ -917,26 +925,146 @@
 (unassemble #(26 2536 4209 1403 0 14))
 
 
-;;; assembler passes
-;;  collect strings/methods/fields/classes/etc
-;;  build tables (sort, etc)
-;;  insert table refs, assign string instructions
-;;  assign sized instructions
-;;     ex const ->const/4, const/16, etc
-;;     - selection depends on register index in addition to size of
-;;       any immediate values
-;;     (may expand to more than 1 instruction, ex :add-int/lit
-;;      might need to be a :const + :add-int?
-;;  ?resolve jumps:
-;;  ?  calculate min/max branch distances
-;;  ?  assign specific instruction where min/max are in same range
-;;  ?  recalculate and assign until no more unassigned, or still
-;;  ?    can't decide size for all
-;;  ?    (in which case just assign all as larger size)
-;;  possibly easier to just select jumps instructions based on max size,
-;;    then go back and fill in actual size, even if it happens to fit
-;;    in next smaller opcode size?
-;; build fill-array-data tables, packed/sparse switch tables, and
-;;   assign locations to instructions
-;; count registers used?
-;; encode to u16s
+(defun asm-lookup-constants (asm)
+  (flet ((lookup (type value)
+           (case type
+             (:string
+              (if (boundp '*strings*) (gethash value *strings* value) value))
+             ((:type :array :class)
+              (if (boundp '*types*) (gethash value *types* value) value))
+             (:method
+                 (if (boundp '*methods*) (gethash value *methods* value) value))
+             (:field
+              (if (boundp '*fields*) (gethash value *fields* value) value))
+             (t value))))
+    (loop for (op . args) in asm
+          for types = (getf (gethash op *opcodes*) :types)
+          collect (cons op
+                        (loop for arg in args
+                              for i from 0
+                              for type = (nth i types)
+                              collect (lookup type arg))))))
+
+(defun asm-select-sized-opcode (asm)
+  (flet ((u4p (x) (typep x '(unsigned-byte 4)))
+         (u8p (x) (typep x '(unsigned-byte 8)))
+         (u16p (x) (typep x '(unsigned-byte 16)))
+         (u32p (x) (typep x '(unsigned-byte 32)))
+         #++(u64p (x) (typep x '(unsigned-byte 64)))
+         (s4p (x) (typep x '(signed-byte 4)))
+         (s8p (x) (typep x '(signed-byte 8)))
+         (s16p (x) (typep x '(signed-byte 16)))
+         (s32p (x) (typep x '(signed-byte 16)))
+         (s64p (x) (typep x '(signed-byte 16)))
+         (cant-encode (x &optional reason)
+           (error "can't encode ~s~@[, ~s~]" x reason)))
+    (loop with from16 = (alexandria:alist-hash-table
+                         '((:move . :move/from16)
+                           (:move-wide . :move-wide/from16)
+                           (:move-object . :move-object/from16)))
+          with arg16 = (alexandria:alist-hash-table
+                        '((:move . :move/16)
+                          (:move-wide . :move-wide/16)
+                          (:move-object . :move-object/16)))
+          for ins in asm
+          for (op . arg) = ins
+          collect
+          (case op
+            ((:move :move-wide :move-object)
+             (cond
+               ((and (u4p (first arg)) (u4p (second arg)))
+                ins)
+               ((and (u8p (first arg)) (u16p (second arg)))
+                (cons (gethash op from16) arg))
+               ((and (u16p (first arg)) (u16p (second arg)))
+                (cons (gethash op arg16) arg))
+               (t (cant-encode ins "invalid register indices"))))
+            (:const
+             (cond
+               ((and (u4p (first arg)) (s4p (second arg)))
+                (cons :const/4 arg))
+               ((and (u8p (first arg)) (s16p (second arg)))
+                (cons :const/16 arg))
+               ((and (u8p (first arg)) (s32p (second arg))
+                     (zerop (ldb (byte 16 0) (second arg))))
+                (cons :const/high16 arg))
+               ((and (u8p (first arg)) (s32p (second arg)))
+                (cons :const arg))
+               (t (cant-encode ins "invalid register index or immediate value too large"))))
+            (:const-wide
+             (cond
+               ((and (u8p (first arg)) (s16p (second arg)))
+                (cons :const-wide/16 arg))
+               ((and (u8p (first arg)) (s32p (second arg)))
+                (cons :const-wide/32 arg))
+               ((and (u8p (first arg)) (s64p (second arg))
+                     (zerop (ldb (byte 48 0) (second arg))))
+                (cons :const-wide/high16 arg))
+               ((and (u8p (first arg)) (s64p (second arg)))
+                (cons :const-wide arg))
+               (t (cant-encode ins "invalid register index or immediate value too large"))))
+
+            (:const-string
+             (cond
+               ((u16p (second arg))
+                (cons :const-string arg))
+               ((u32p (second arg))
+                (cons :const-string/jumbo arg))
+               (t (cant-encode ins "invalid string-table index"))))
+            (:goto
+             (cond
+               ((s8p (first arg))
+                (cons :goto arg))
+               ((s16p (first arg))
+                (cons :goto/16 arg))
+               ((s32p (second arg))
+                (cons :goto/32 arg))
+               (t (cant-encode ins "invalid offset for goto"))))
+            (#.(mapcar 'cdr +2addr-opcodes+)
+             ;; use /2addr version when src1 nd dest are same, and both are u4
+             (if (and (= (first arg) (second arg))
+                      (u4p (first arg)) (u4p (second arg)))
+                 (cons (gethash op *2addr-map*) arg)
+                 ins))
+
+            ;; not sure if it is reasonable to merge /lit16 and /lit8 ops
+            ;; since neither is a superset of the other (reg size vs
+            ;; size of constant)
+            (t ins)))))
+
+(defparameter *assembler-passes* '(asm-lookup-constants
+                                   asm-select-sized-opcode))
+
+(defun assemble (asm &key (passes *assembler-passes*))
+  (loop for pass in passes
+        do (setf asm (funcall pass asm)))
+  (flex:with-output-to-sequence (out :element-type '(unsigned-byte 16))
+    (loop for instruction in asm
+          for (name . args) = instruction
+          for opdef = (gethash name *opcodes*)
+          for opcode = (getf opdef :code)
+          for format = (getf opdef :format)
+          for writer = (getf (gethash format *instruction-formats*)
+                             :write)
+          collect (if writer
+                      (apply writer name opcode out args)
+                      (error "don't know how to assemble opcode ~s" name)))))
+
+
+#++
+(assemble (unassemble #(26 2536 4209 1403 0 14)))
+#++
+(let ((*disassembler-passes* nil))
+  (unassemble (assemble '((:CONST-STRING 0 2536) (:INVOKE-STATIC 1403 0)  (:const 1 1) (:RETURN 1)))))
+#++
+(let ((*strings* (alexandria:alist-hash-table '(("loadLibrary" . 0)
+                                                ("Ljava/lang/System;" . 1)
+                                                ("testing" . 2))
+                                              :test 'equal))
+      (*methods* (alexandria:alist-hash-table
+                  '((("Ljava/lang/System;" "loadLibrary") . 0))
+                  :test 'equal)))
+  (assemble '((:CONST-STRING 0 "testing")
+              (:INVOKE-STATIC ("Ljava/lang/System;" "loadLibrary") 0)
+              (:const 1 1)
+              (:RETURN 1))))
