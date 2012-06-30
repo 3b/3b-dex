@@ -5,6 +5,7 @@
                "alexandria"
                ;"chipz" "salza2"
                )
+  :serial t
   :components ((:file "package")
                (:file "util")
                (:file "opcodes")
