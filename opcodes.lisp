@@ -334,7 +334,17 @@
                          (declare (ignore op args))
                          (let ((s (getf (gethash ',format *instruction-formats*)
                                         :size)))
-                           (values s s)))))))
+                           (values s s)))
+                 :read (lambda (&rest args)
+                         (apply (getf (gethash ',format
+                                               *instruction-formats*)
+                                      :read)
+                                args))
+                 :write (lambda (&rest args)
+                          (apply (getf (gethash ',format
+                                                *instruction-formats*)
+                                       :write)
+                                 args))))))
 
 ;; there are some embedded data things that start with NOP, so can't
 ;; use 10x format directly
@@ -668,7 +678,7 @@
 (defop #xff :unused () 10xe ())
 
 ;;; pseudo-ops
-(defmacro defop* (name args &key format types size)
+(defmacro defop* (name args &key format types size write)
   `(progn
      (when (gethash ,name *opcodes*)
        (warn "redefining pseudo-opcode ~s (~s)~%"
@@ -676,20 +686,63 @@
      (setf (gethash ',name *opcodes*)
            (list :code NIL :name ',name :format ',format :args ',args
                  :types ',types
-                 :size ,size))))
+                 :size ,size
+                 ;;:read ,read
+                 :write ,write))))
 
 (defop* :packed-switch-payload (&key first-key targets)
+  ;; read handled by special case of :nop format
+  :write (lambda (name op stream &key first-key targets)
+           (declare (ignore name op))
+           (flet ((out (x) (write-byte x stream)))
+             (out #x0100)
+             (out (word (length targets) 16))
+             (out (ldb (byte 16 0) first-key))
+             (out (ldb (byte 16 16) first-key))
+             (loop for i across targets
+                   do (out (ldb (byte 16 0) i))
+                      (out (ldb (byte 16 16) i)))))
   :size (lambda (op &key first-key targets)
           (declare (ignore op first-key))
           (let ((s (+ 1 1 2 (* 2 (length targets))))) (values s s))))
 
 (defop* :sparse-switch-payload (&key keys targets)
+  ;; read handled by special case of :nop format
+  :write (lambda (name op stream &key keys targets)
+           (declare (ignore name op))
+           (flet ((out (x) (write-byte x stream)))
+             (out #x0200)
+             (out (word (length targets) 16))
+             (loop for i across keys
+                   do (out (ldb (byte 16 0) i))
+                      (out (ldb (byte 16 16) i)))
+             (loop for i across targets
+                   do (out (ldb (byte 16 0) i))
+                      (out (ldb (byte 16 16) i)))))
   :size (lambda (op &key keys targets)
           (declare (ignore op))
           (let ((s (+ 1 1 (* 2 (length keys)) (* 2 (length targets)))))
             (values s s))))
 
 (defop* :fill-array-data-payload (&key element-width data)
+  ;; read handled by special case of :nop format
+  :write (lambda (name op stream &key element-width data)
+           (declare (ignore name op))
+           (flet ((out (x) (write-byte x stream)))
+             (out #x0300)
+             (out (word element-width 16))
+             (out (ldb (byte 16 0) (length data)))
+             (out (ldb (byte 16 16) (length data)))
+             ;; not sure if arbitrary octet sizes are allowed or not
+             ;; only handling 1 and multiples of 2 for now though...
+             (assert (or (= element-width 1)
+                         (evenp element-width)))
+             (if (= element-width 1)
+                 (loop for i below (length data) by 2
+                       do (out (word (aref data (1+ i)) 8 (aref data i) 8)))
+                 (loop for i across data
+                       do (loop for o below (floor element-width 2)
+                                do (out (ldb (byte 16 (* o 16)) i)))))))
   :size (lambda (op &key element-width data)
           (declare (ignore op))
           (let ((s (+ 1 1 2 (floor (1+ (* (length data) element-width))
@@ -697,7 +750,8 @@
             (values s s))))
 
 (defop* :label (name)
-  :size (lambda (name) (declare (ignore name)) (values 0 0)))
+  :write (lambda (&rest r) (declare (ignore r)))
+  :size (lambda (op name) (declare (ignore op name)) (values 0 0)))
 
 ;;; disassembler passes
 (defun expand-string/type/etc-refs (asm)
@@ -800,14 +854,14 @@
                  (:packed-switch
                   (let ((table (gethash (+ pc (second arg)) addresses)))
                     (list
-                     :packed-switch
+                     :packed-switch (first arg)
                      (loop for key from (getf (cdr table) :first-key)
                            for off across (getf (cdr table) :targets)
                            collect (cons key (gethash (+ pc off) branches))))))
                  (:sparse-switch
                   (let ((table (gethash (+ pc (second arg)) addresses)))
                     (list
-                     :sparse-switch
+                     :sparse-switch (first arg)
                      (loop for key across (getf (cdr table) :keys)
                            for off across (getf (cdr table) :targets)
                            collect (cons key (gethash (+ pc off) branches))))))
@@ -910,10 +964,7 @@
                     for opdef = (when op (gethash (aref *opcode-index* op)
                                                   *opcodes*))
                     for op-name = (getf opdef :name)
-                    for format = (getf opdef :format)
-                    for reader = (when format
-                                   (getf (gethash format *instruction-formats*)
-                                         :read))
+                    for reader = (getf opdef :read)
                     while instruction
                     collect (funcall reader op-name instruction s)))
         for pass in passes
@@ -952,7 +1003,7 @@
          (u32p (x) (typep x '(unsigned-byte 32)))
          #++(u64p (x) (typep x '(unsigned-byte 64)))
          (s4p (x) (typep x '(signed-byte 4)))
-         (s8p (x) (typep x '(signed-byte 8)))
+         #++(s8p (x) (typep x '(signed-byte 8)))
          (s16p (x) (typep x '(signed-byte 16)))
          (s32p (x) (typep x '(signed-byte 16)))
          (s64p (x) (typep x '(signed-byte 16)))
@@ -1011,15 +1062,8 @@
                ((u32p (second arg))
                 (cons :const-string/jumbo arg))
                (t (cant-encode ins "invalid string-table index"))))
-            (:goto
-             (cond
-               ((s8p (first arg))
-                (cons :goto arg))
-               ((s16p (first arg))
-                (cons :goto/16 arg))
-               ((s32p (second arg))
-                (cons :goto/32 arg))
-               (t (cant-encode ins "invalid offset for goto"))))
+            ;; we can't expand :goto yet, because we don't know here
+            ;; the jump goes until we assign specific instructions
             (#.(mapcar 'cdr +2addr-opcodes+)
              ;; use /2addr version when src1 nd dest are same, and both are u4
              (if (and (= (first arg) (second arg))
@@ -1032,8 +1076,136 @@
             ;; size of constant)
             (t ins)))))
 
+(defun asm-finalize-branches (asm)
+  ;; first pass: find min/max possible address for every label,goto
+  (flet ((s8p (x) (typep x '(signed-byte 8)))
+         (s16p (x) (typep x '(signed-byte 16)))
+         (s32p (x) (typep x '(signed-byte 16)))
+         #++(ilmax (&rest r)
+              (reduce (lambda (a b)
+                        (if (>= (integer-length a) (integer-length b)) a b))
+                      r))
+         (ilmax (a b)
+           (if (>= (integer-length a) (integer-length b)) a b)))
+    (let ((labels (make-hash-table)))
+      (loop with min = 0
+            with max = 0
+            for instruction in asm
+            for (name . arg) = instruction
+            for opdef = (gethash name *opcodes*)
+            for size = (getf opdef :size)
+            ;; everything else should have a fixed size by now,
+            ;; just need to handle GOTO by hand
+            when (eq name :goto)
+              do (incf min 1) (incf max 3)
+            else
+              do (multiple-value-bind (omin omax) (apply size instruction)
+                   (incf min omin)
+                   (incf max omax))
+            when (eq name :label)
+              do (setf (gethash (first arg) labels) (list min max)))
+
+      ;; second pass: assign instructions to GOTOs, update labels with
+      ;; actual addresses
+      (loop with pc = 0
+            for instruction in asm
+            for (name . arg) = instruction
+            for opdef = (gethash name *opcodes*)
+            for size = (getf opdef :size)
+            ;; everything else should have a fixed size by now,
+            ;; just need to handle GOTO by hand
+            when (eq name :label)
+              do (setf (gethash (first arg) labels) (list pc pc))
+            when (eq name :goto)
+              collect (destructuring-bind (lmin lmax)
+                          (gethash (first arg) labels)
+                        (let ((d (ilmax (- pc lmin) (- pc lmax))))
+                          (cond
+                            ((s8p d) (incf pc 1) instruction)
+                            ((s16p d) (incf pc 2) (cons :goto/16 arg))
+                            ((s32p d) (incf pc 3) (cons :goto/32 arg))
+                            ;; invalid, let final pass deal with it
+                            (t (error "fpp!") instruction))))
+            else
+              do (incf pc (apply size instruction))
+              and collect instruction)
+      ;; 3rd pass: assign addresses, store refs to array/switch instructions
+      ;; build tables for array/switches, add to end and update array/switches
+      (let ((tables nil)
+            (pc 0))
+        (append
+         (loop for instruction in asm
+               for (name . arg) = instruction
+               for opdef = (gethash name *opcodes*)
+               for size = (getf opdef :size)
+               ;; labels should have correct locations from previous pass
+               ;; so calculate offsets and update goto/branch instructions
+               collect
+               (flet ((off (x)
+                        (- (first (gethash x labels)) pc)))
+                 (case name
+                   ((:goto :goto/16 :goto/32)
+                    (list name (off (first arg))))
+                   ((:if-eq :if-ne :if-lt :if-gt :if-le :if-ge)
+                    (list name (first arg) (second arg)
+                          (off (third arg))))
+                   ((:if-eqz :if-nez :if-ltz :if-gtz :if-lez :if-gez)
+                    (list name (first arg)
+                          (off (second arg))))
+                   (:fill-array
+                    ;; make a copy of the instruction so we can patch it later
+                    (let ((i (copy-list instruction)))
+                      (push (list pc i) tables)
+                      i))
+                   ((:packed-switch :sparse-switch)
+                    ;; make a copy of the instruction so we can patch it later
+                    (let ((i (list name (first arg)
+                                   (loop for (k . label) in (second arg)
+                                         collect (cons k (off label))))))
+                      (push (list pc i) tables)
+                      i))
+                   (t instruction)))
+               do (incf pc (apply size instruction)))
+         (loop for (from instruction) in (reverse tables)
+               for (op . args) = instruction
+               collect
+               (progn
+                 (incf pc (logand pc 1)) ;; align pc if needed
+                 (case op
+                   (:fill-array
+                    (destructuring-bind (&key element-width data) (cdr args)
+                      (setf (third instruction) (- pc from))
+                      (let ((new (list :fill-array-data-payload
+                                       :element-width element-width
+                                       :data data)))
+                        (incf pc (apply (getf (gethash (car new) *opcodes*)
+                                              :size)
+                                        new))
+                        new)))
+                   (:packed-switch
+                    (let ((targets (second args)))
+                      (setf (third instruction) (- pc from))
+                      (let ((new (list :packed-switch-payload
+                                       :first-key (caar targets)
+                                       :targets (map 'vector 'cdr targets))))
+                        (incf pc (apply (getf (gethash (car new) *opcodes*)
+                                              :size)
+                                        new))
+                        new)))
+                   (:sparse-switch
+                    (let ((targets (second args)))
+                      (setf (third instruction) (- pc from))
+                      (let ((new (list :sparse-switch-payload
+                                       :keys (map 'vector 'car targets)
+                                       :targets (map 'vector 'cdr targets))))
+                        (incf pc (apply (getf (gethash (car new) *opcodes*)
+                                              :size)
+                                        new))
+                        new)))))))))))
+
 (defparameter *assembler-passes* '(asm-lookup-constants
-                                   asm-select-sized-opcode))
+                                   asm-select-sized-opcode
+                                   asm-finalize-branches))
 
 (defun assemble (asm &key (passes *assembler-passes*))
   (loop for pass in passes
@@ -1044,8 +1216,7 @@
           for opdef = (gethash name *opcodes*)
           for opcode = (getf opdef :code)
           for format = (getf opdef :format)
-          for writer = (getf (gethash format *instruction-formats*)
-                             :write)
+          for writer = (getf opdef :write)
           collect (if writer
                       (apply writer name opcode out args)
                       (error "don't know how to assemble opcode ~s" name)))))
@@ -1068,3 +1239,35 @@
               (:INVOKE-STATIC ("Ljava/lang/System;" "loadLibrary") 0)
               (:const 1 1)
               (:RETURN 1))))
+
+
+#++
+(let ((*strings* (alexandria:alist-hash-table '(("loadLibrary" . 0)
+                                                ("Ljava/lang/System;" . 1)
+                                                ("testing" . 2))
+                                              :test 'equal))
+      (*methods* (alexandria:alist-hash-table
+                  '((("Ljava/lang/System;" "loadLibrary") . 0))
+                  :test 'equal)))
+  (assemble '((:label foo)
+              (:CONST-STRING 0 "testing")
+              (:label foo2)
+              (:if-eq 0 2 foo)
+              (:INVOKE-STATIC ("Ljava/lang/System;" "loadLibrary") 0)
+              (:label bar)
+              (:goto end)
+              (:const 1 1)
+              (:sparse-switch 2 ((7 . foo) (9 . foo2) (11 . foo) (12 . end)))
+              (:goto bar)
+              (:label end)
+              (:RETURN 1))))
+
+#++
+(let ((*strings* (vector "loadLibrary" "Ljava/lang/System;" "testing"
+                         :test 'equal))
+      (*methods* (vector '("Ljava/lang/System;" "loadLibrary"))))
+  (unassemble
+   #(26 2 8242 65534 4209 0 0 1576 4370 556 5 0 64296 271 512 4 7 0 9 0
+     11 0 12 0 65527 65535 65529 65535 65527 65535 4 0)))
+
+
