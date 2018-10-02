@@ -320,8 +320,9 @@
   (flet ((cc ()
            (let ((c (read-u16 s)))
              (when (plusp c)
-               (string (list (code-char (ldb (byte 8 8) c))
-                             (code-char (ldb (byte 8 0) c))))))))
+               (coerce (list (code-char (ldb (byte 8 8) c))
+                             (code-char (ldb (byte 8 0) c)))
+                       'string)))))
     (let ((start (file-position s))
           (size (read-u32 s)))
       (prog1 ;; todo: filter out "don't care" values
