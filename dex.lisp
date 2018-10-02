@@ -429,10 +429,11 @@
     hash))
 
 (defun read-debug-info (stream)
-  (let* ((start (read-uleb128 stream))
-         (psize (read-uleb128 stream))
+  (let* ((line-start (read-uleb128 stream))
+         (parameters-size (read-uleb128 stream))
          (params (coerce
-                  (loop repeat psize for i = (read-uleb128+1 stream)
+                  (loop repeat parameters-size
+                        for i = (read-uleb128+1 stream)
                         collect (unless (minusp i) (aref *strings* i)))
                   'vector))
          (bytecode nil))
@@ -465,7 +466,7 @@
                             (t
                              (list :special code)))
                   while (/= code 0))))
-    (make-instance 'dex-debug-info :start start :parameters params
+    (make-instance 'dex-debug-info :start line-start :parameters params
                                    :bytecode bytecode)))
 
 
@@ -496,7 +497,8 @@
                            :registers registers
                            :ins ins
                            :outs outs
-                           :debug-info (read-debug-info stream)
+                           :debug-info (ignore-errors
+                                        (read-debug-info stream))
                            :tries tries
                            :instructions (unassemble instructions)
                            '%inst instructions)))))
@@ -566,6 +568,9 @@
     ;; fixme: do something with this?
     (list :annotation :type type :annotations a)))
 
+(ieee-floats:make-float-converters encode-float32 decode-float32 8 23 t)
+(ieee-floats:make-float-converters encode-float64 decode-float64 11 52 t)
+
 (defun read-encoded-value (stream)
   (let* ((arg+type (read-u8 stream))
          (arg (ldb (byte 3 5) arg+type))
@@ -577,39 +582,43 @@
      (case type
        (#x00 ;; signed byte arg should be 0
         (read-s8 stream))
-       (#x01 ;; signed short
+       (#x02 ;; signed (16 bit) short
         (let* ((lo (read-u8 stream))
                (hi (cond
                      ((plusp arg) (read-u8 stream))
                      ((logbitp 7 lo) -1)
                      (t 0))))
           (logior (ash hi 8) lo)))
-       (#x02 ;; (unsigned 16-bit) shar
+       (#x03 ;; (unsigned 16-bit) char
         (let ((lo (read-u8 stream))
               (hi (if (plusp arg) (read-u8 stream) 0)))
           (logior (ash hi 8) lo)))
-       (#x03 ;; signed int
+       (#x04 ;; signed (32 bit) int
         (let ((a (loop for i below (1+ arg)
                        sum (ash (read-u8 stream) (* i 8)))))
           (when (and (/= arg 3) (logbitp (+ 7 (* arg 8)) a))
             (setf a (logior a (ash -1 (* 8 (1+ arg))))))
           a))
-       (#x04 ;; signed long
+       (#x06 ;; signed (32bit) long
         (let ((a (loop for i below (1+ arg)
                        sum (ash (read-u8 stream) (* i 8)))))
           (when (and (/= arg 7) (logbitp (+ 7 (* arg 8)) a))
             (setf a (logior a (ash -1 (* 8 (1+ arg))))))
           a))
        (#x10 ;; float32
-        (ieee-floats:decode-float32
+        (decode-float32
          (ash (loop for i below (1+ arg)
                     sum (ash (read-u8 stream) (* i 8)))
               (* 8 (- 3 arg)))))
        (#x11 ;; float64
-        (ieee-floats:decode-float64
+        (decode-float64
          (ash (loop for i below (1+ arg)
                     sum (ash (read-u8 stream) (* i 8)))
               (* 8 (- 7 arg)))))
+       (#x15 ;; method type
+        (error "todo: encoded value: method type"))
+       (#x #x16 ;; method handle
+        (error "todo: encoded value: method handle"))
        (#x17 ;; string
         (aref *strings* (u32)))
        (#x18 ;; type
@@ -628,8 +637,7 @@
         nil)
        (#x1f ;; boolean
         (not (zerop arg)))
-       (t (error "invalid encoded_value? type = #x~2,'0x, arg = ~d" type arg))
-       ))))
+       (t (error "invalid encoded_value? type = #x~2,'0x, arg = ~d" type arg))))))
 
 (defun read-encoded-array (stream)
   (let ((size (read-uleb128 stream)))
@@ -801,8 +809,7 @@
              (*fields* (read-fields stream fields-size fields-off))
              (*methods* (read-methods stream methods-size methods-off))
              (classes (read-classes stream classes-size classes-off))
-             #++(data (read-data stream data-size data-off))
-             )
+             #++(data (read-data stream data-size data-off)))
         (values
          (make-instance
           'dex-file
@@ -816,5 +823,4 @@
           ;; :methods methods
           :classes classes)
          ;; returning tables as extra values for debugging for now...
-         *strings* *types* *methods* *prototypes* *fields* )))))
-
+         *strings* *types* *methods* *prototypes* *fields*)))))
