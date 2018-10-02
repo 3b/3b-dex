@@ -690,11 +690,29 @@
 (defop #xf7 :unused () 10xe ())
 (defop #xf8 :unused () 10xe ())
 (defop #xf9 :unused () 10xe ())
-(defop #xfa :unused () 10xe ())
-(defop #xfb :unused () 10xe ())
-(defop #xfc :unused () 10xe ())
-(defop #xfd :unused () 10xe ())
-(defop #xff :unused () 10xe ())
+
+;; todo: new opcodes from ver 038+
+(defop #xfa :unused () 10xe ()) ;; invoke-polymorphic
+(defop #xfb :unused () 10xe ()) ;; invoke-polymorphic/range
+(defop #xfc :unused () 10xe ()) ;; invoke-custom
+(defop #xfd :unused () 10xe ()) ;; invoke-custom/range
+(defop #xfe :unused () 10xe ()) ;; const-method-handle
+(defop #xff :unused () 10xe ()) ;; const-method-type
+;; dex ver 038+
+#++
+(defop #xfa :invoke-polymorphic
+  (count method receiver reg1 reg2 reg3 reg4 prototype-ref)
+  45cc
+  ;; count is 4 bits, not sure if we need :lit4?
+  ;; not sure if prototype-ref is just :type or something new?
+  (:lit4 :method :rego16 :regn4 :regn4 :regn4 :regn4 :proto))
+#++
+(defop #xfb :invoke-polymorphic/range
+  (count method receiver prototype-ref &rest)
+  45cc
+  ;; not sure if prototype-ref is just :type or something new?
+  (:lit8 :method :rego16 :proto))
+
 
 ;;; pseudo-ops
 (defmacro defop* (name args &key format types size write)
