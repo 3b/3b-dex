@@ -1,16 +1,18 @@
 (in-package #:3b-dex)
 
+;; https://android.googlesource.com/platform/frameworks/base/+/master/tools/aapt2/format/binary/
 (defparameter *string-pool* nil)
 (defparameter *xml-tree* nil)
 (defparameter *type-spec* nil)
 (defparameter *table-package-types* nil)
 (defparameter *table-package-keys* nil)
+(defparameter *sdk-version* 0)
 
 (defmethod read-chunk-with-type (type hsize bsize stream)
   ;; hsize is header size - any already parsed octets
   ;; bsize is size of body
   (error "unknown type ~x" type)
-  (file-position stream (+ (file-position stream) (+ hsize bsize )))
+  (file-position stream (+ (file-position stream) (+ hsize bsize)))
   (list type))
 
 (defmethod read-chunk-with-type ((type (eql #x0000)) hsize bsize stream)
@@ -69,27 +71,28 @@
       (file-position stream (+ bstart bsize))
       (unless *string-pool*
         (setf *string-pool* strings))
-      (list :string-pool strings hsize bsize))))
+      (list :string-pool :string strings :styles nil
+                         :hsize hsize :bsize bsize))))
 
 (defmethod read-chunk-with-type ((type (eql #x0002)) hsize bsize stream)
   #++(file-position stream (+ (file-position stream) (+ hsize bsize)))
   #++(list :table hsize bsize)
   (let ((package-count (read-u32 stream)))
     (declare (ignore package-count))
-    (list :table
-          (loop for o = 0 then (+ o s)
-                for (c s) = (multiple-value-list
-                             (%read-chunk stream :max-length (- bsize o)))
-                when c collect c
-                while (< (+ o s) bsize)))))
+    (list* :table
+           (loop for o = 0 then (+ o s)
+                 for (c s) = (multiple-value-list
+                              (%read-chunk stream :max-length (- bsize o)))
+                 when c collect c
+                   while (< (+ o s) bsize)))))
 
 (defmethod read-chunk-with-type ((type (eql #x0003)) hsize bsize stream)
   #++(list :xml hsize bsize)
-  (list :xml (loop for o = 0 then (+ o s)
-                   for (c s) = (multiple-value-list
-                                (%read-chunk stream :max-length (- bsize o)))
-                   when c collect c
-                   while (< (+ o s) bsize))))
+  (list* :xml (loop for o = 0 then (+ o s)
+                    for (c s) = (multiple-value-list
+                                 (%read-chunk stream :max-length (- bsize o)))
+                    when c collect c
+                      while (< (+ o s) bsize))))
 
 (defun read-string-pool (s)
   (let ((a (read-u32 s)))
@@ -116,7 +119,7 @@
          (expand-restable-ref data))
       #++ (2 .. attribute resource identifier?)
       (3
-       (when (and (plusp data) (/= data #.(1- (expt 2 32))))
+       (when (and (not (minusp data)) (/= data #.(1- (expt 2 32))))
          (if (< data (length *string-pool*))
              (elt *string-pool* data)
              (list :string data))))
@@ -188,7 +191,7 @@
        ;; fixme: verify attr matches?
        (declare (ignore ,attr))
        #++(format t "n = ~s~%" ,n)
-       #++(format t "tree = ~s~%" ,*xml-tree*) 
+       #++(format t "tree = ~s~%" ,*xml-tree*)
        (if (assoc :line (cadr ,n))
            (setf (cadr (assoc :line (cadr ,n)))
                  (list (cadr (assoc :line (cadr ,n))) ,line))
@@ -198,7 +201,7 @@
              (setf (cadr (assoc :comment (cadr ,n)))
                    (list (cadr (assoc :comment (cadr ,n))) ,comment))
              (push (list :comment (list nil ,comment)) (cadr ,n))))
-       (setf (caddr ,n)
+       (setf (cddr ,n)
              (reverse (caddr ,n)))
        (if *xml-tree*
            (progn (push ,n (caddar *xml-tree*)) nil)
@@ -264,8 +267,7 @@
   #++(list :xml-end-element hsize bsize)
   (xml-end :xml-end-element (stream)
     (list :ns (read-string-pool stream)
-          :name (read-string-pool stream)))
-)
+          :name (read-string-pool stream))))
 
 (defmethod read-chunk-with-type ((type (eql #x0104)) hsize bsize stream)
   (file-position stream (+ (file-position stream) (+ hsize bsize)))
@@ -285,6 +287,13 @@
   (file-position stream (+ (file-position stream) (+ hsize bsize)))
   (list :xml-last-chunk hsize bsize))
 
+
+(defun get-string-from-table (table id)
+  (let ((strings (getf (cdr table) :string)))
+    (if (and strings
+             (<= 0 id (length strings)))
+        (elt strings id)
+        id)))
 
 (defmethod read-chunk-with-type ((type (eql #x0200)) hsize bsize stream)
   #++(file-position stream (+ (file-position stream) (+ hsize bsize)))
@@ -306,15 +315,152 @@
     (declare (ignorable types-offset last-public-type
                         keys-offset last-public-key))
     (assert (plusp id) () "don't know how to handle table-package chunk that overrides another package (id=0)")
-    (list :table-package
-          :id id :name name
-          :types *table-package-types* :keys *table-package-keys*
-          (loop with start-typespecs = (- (file-position stream) start)
-                for o = 0 then (+ o s)
-                for (c s) = (multiple-value-list
-                             (%read-chunk stream :max-length (- bsize o)))
-                when c collect c
-                  while (< (+ o s) (- bsize start-typespecs))))))
+    (list* :table-package
+           (list :id id :name name
+                 :types *table-package-types* :keys *table-package-keys*)
+           (loop with start-typespecs = (- (file-position stream) start)
+                 for o = 0 then (+ o s)
+                 for (c s) = (multiple-value-list
+                              (%read-chunk stream :max-length (- bsize o)))
+                 when c collect c
+                   while (< (+ o s) (- bsize start-typespecs))))))
+
+(defvar *config-enums*
+  (flet ((e (&rest kv)
+           (let ((fields nil))
+             (setf
+              kv
+              (loop
+                for (k v) on kv by #'cddr
+                when (consp v)
+                  do (push
+                      (list k
+                            (car v)
+                            (alexandria:plist-hash-table (cdr v))
+                            (alexandria:plist-hash-table (reverse (cdr v))))
+                      fields)
+                else
+                  collect k and collect v))
+             (list (alexandria:plist-hash-table kv)
+                   (alexandria:plist-hash-table (reverse kv))
+                   fields))))
+    (alexandria:plist-hash-table
+     (list :color-mode (e :hdr '(#xc
+                                 :undefined 0
+                                 :lowdr 4
+                                 :highdr 8)
+                          :undefined 0
+                          :wide-gamut '(#x3
+                                        :undefined 0
+                                        :nowidecg 1
+                                        :widecg 2))
+           :density-dpi (e :undefined 0)
+           :hard-keyboard-hidden (e :undefined 0
+                                    :no 1
+                                    :yes 2)
+           :keyboard-hidden (e :undefined 0
+                               :no 1
+                               :yes 2)
+           :keyboard (e :undefined 0
+                        :nokeys 1
+                        :qwerty 2
+                        :12key 3)
+           :navigation-hidden (e :undefined 0
+                                 :no 1
+                                 :yes 2)
+           :navigation (e :undefined 0
+                          :nonav 1
+                          :dpad 2
+                          :trackball 3
+                          :wheel 4)
+           :orientation (e :undefined 0
+                           :portrait 1
+                           :landscape 2
+                           :square 3
+                           :layoutdir '(#xc
+                                        :undefined 0
+                                        :ltr #x40
+                                        :rtl #x80))
+           :screen-layout (e :long '(#x30
+                                     :undefined 0
+                                     :no #x10
+                                     :yes #x20)
+                             :round '(#x300
+                                      :undefined 0
+                                      :no #x100
+                                      :yes #x200)
+                             :size '(#xf
+                                     :undefined 0
+                                     :small #x1
+                                     :normal #x2
+                                     :large #x3
+                                     :xlarge 4))
+           :touchscreen (e :finger 3
+                           :notouch 1
+                           :stylus 2
+                           :undefined 0)
+           :mode (e :night '(#x30
+                             :undefined 0
+                             :no #x10
+                             :yes #x20)
+                    :type '(#xf
+                            :undefined 0
+                            :normal 1
+                            :desk 2
+                            :car 3
+                            :television 4
+                            :appliance 5
+                            :watch 6
+                            :headset 7))))))
+
+
+(defun decode-enum (v enum)
+  (if (zerop v)
+      nil
+      (let ((tmp v))
+        (destructuring-bind (w r fields) (gethash enum *config-enums*)
+          (declare (ignore w))
+          (let ((ff (when fields
+                      (loop for (k mask nil kv) in fields
+                            for masked = (logand mask tmp)
+                            do (setf tmp (logand tmp (lognot mask)))
+                            collect (list k (gethash masked kv))))))
+            (list* (gethash tmp r) ff))))))
+
+(defun read-config-enum/8 (s enum)
+  (decode-enum (read-u8 s) enum))
+
+(defun read-config-enum/16 (s enum)
+  (decode-enum (read-u16 s) enum))
+
+(defun encode-enum (v enum)
+  (cond
+    ((numberp v)
+     v)
+    ((null v)
+     0)
+    ((symbolp v)
+     (gethash v (first (gethash enum *config-enums*))))
+    (t
+     (let ((tmp 0))
+       (destructuring-bind (w r fields) (gethash enum *config-enums*)
+         (declare (ignore r))
+         (loop for x in v
+               when (symbolp x)
+                 do (setf tmp (logior tmp (gethash x w)))
+               else
+                 do (setf tmp (logior tmp
+                                      (gethash (second x)
+                                               (third
+                                                (assoc (first x) fields))))))
+         tmp)))))
+
+(defun write-config-enum/8 (v s enum)
+  (write-byte (encode-enum v enum) s))
+
+(defun write-config-enum/16 (v s enum)
+  (write-u16 (encode-enum v enum) s))
+
 
 (defun read-table-type-config (s)
   (flet ((cc ()
@@ -325,28 +471,35 @@
                        'string)))))
     (let ((start (file-position s))
           (size (read-u32 s)))
-      (prog1 ;; todo: filter out "don't care" values
-          (list :imsi-mcc (read-u16 s)
-                :imsi-mnc (read-u16 s)
-                :locale-lang (cc)
-                :locale-countrty (cc)
-                :screen-type-orientation (read-u8 s) ;; todo: decode enum
-                :screen-type-touchscreen (read-u8 s) ;; todo: decode enum
-                :screen-type-density (read-u16 s) ;; todo: decode enum
-                :input-keyboard (read-u8 s)       ;; todo: decode enum
-                :input-navigation (read-u8 s)     ;; todo: decode enum
-                :input-flags (prog1 (read-u8 s)   ;; todo: decode enum
-                               (read-u8 s))       ;; 0 padding
-                :screen-width (read-u16 s)
-                :screen-height (read-u16 s)
-                :sdk-version (prog1 (read-u16 s) ;; version
-                               (read-u16 s))     ; minor version == 0
-                :screen-config-layout (read-u8 s) ;; todo: decode enum
-                :screen-config-ui-mode (read-u8 s) ;; todo: decode enum
-                :screen-config-smallest-screen-width-dp (read-u16 s)
-                :screen-width-dp (read-u16 s)
-                :screen-height-dp (read-u16 s))
+      (prog1
+          (loop
+            for (k v)
+              on (list :imsi-mcc (read-u16 s)
+                       :imsi-mnc (read-u16 s)
+                       :locale-lang (cc)
+                       :locale-country (cc)
+                       :screen-type-orientation
+                       (read-config-enum/8 s :orientation)
+                       :screen-type-touchscreen
+                       (read-config-enum/8 s :touchscreen)
+                       :screen-type-density (read-u16 s) ;; todo: decode enum
+                       :input-keyboard (read-config-enum/8 s :keyboard)
+                       :input-navigation (read-config-enum/8 s :navigation)
+                       :input-flags (prog1 (read-u8 s) ;; todo: decode enum
+                                      (read-u8 s))     ;; 0 padding
+                       :screen-width (read-u16 s)
+                       :screen-height (read-u16 s)
+                       :sdk-version (prog1 (read-u16 s) ;; version
+                                      (read-u16 s)) ; minor version == 0
+                       :screen-config-layout (read-config-enum/8 s :screen-layout)
+                       :screen-config-ui-mode (read-config-enum/8 s :mode)
+                       :screen-config-smallest-screen-width-dp (read-u16 s)
+                       :screen-width-dp (read-u16 s)
+                       :screen-height-dp (read-u16 s))
+            by #'cddr
+            when (and v (not (zerop v))) collect k and collect v)
         (assert (= (file-position s) (+ size start)))))))
+
 
 (defun read-table-type-entry (s)
   (let ((start (file-position s))
@@ -358,7 +511,9 @@
       (push :complex flags))
     (when (logbitp 1 bflags)
       (push :public flags))
-    
+    (when (logbitp 2 bflags)
+      (push :weak flags))
+
     (if (member :complex flags)
         ;; body is an array of restable-map
         (let* ((parent (read-restable-ref s))
@@ -366,11 +521,14 @@
                (map (loop for i below count
                           collect (list :name (read-restable-ref s)
                                         :value (read-res-value s)))))
-          (list :entry :flags flags :key key
+          (list :entry :flags flags :key (get-string-from-table
+                                          *table-package-keys* key)
                        :parent parent :values map))
         ;; body is single res-value
-        (list :entry :flags flags :key key :value (read-res-value s)))
-    ))
+        (let ((v (read-res-value s)))
+          (list :entry :flags flags
+                       :key (get-string-from-table *table-package-keys* key)
+                       :value v)))))
 
 (defmethod read-chunk-with-type ((type (eql #x0201)) hsize bsize stream)
   #++(file-position stream (+ (file-position stream) (+ hsize bsize)))
@@ -384,17 +542,14 @@
          (entry-offsets (read-ub32-vector count stream)))
     (declare (ignore r0 r1 offset entry-offsets))
     (assert *type-spec*)
+    ;; fixme: look up by ID instead of just pushing into most recent?
     (push
-     (list :table-type
-           :id (if (and (second *table-package-types*)
-                        (plusp id)
-                        (<= id (length (second *table-package-types*))))
-                   (elt (second *table-package-types*) (1- id))
-                   id)
-           :config config
-           :entries (loop for i below count
-                          collect (read-table-type-entry stream)))
-     (getf (cdr *type-spec*) :types))
+     (list* :table-type
+            (list :id (get-string-from-table *table-package-types* (1- id)))
+            (list :config config)
+            (loop for i below count
+                  collect (read-table-type-entry stream)))
+     (cddr *type-spec*))
     nil))
 
 (defmethod read-chunk-with-type ((type (eql #x0202)) hsize bsize stream)
@@ -407,15 +562,14 @@
          ;; todo :decode bit flags
          (values (read-ub32-vector count stream)))
     (declare (ignore r0 r1))
+    (when *type-spec*
+      (setf (cddr *type-spec*)
+            (reverse (cddr *type-spec*))))
     (setf *type-spec*
-          (list :type-spec
-                :id (if (and (second *table-package-types*)
-                             (plusp id)
-                             (<= id (length (second *table-package-types*))))
-                        (elt (second *table-package-types*) (1- id))
-                        id)
-                :values values
-                :types nil))))
+          (list :table-spec
+                (list
+                 :id (get-string-from-table *table-package-types* (1- id))
+                 :values values)))))
 
 (defun %read-chunk (seekable-stream &key (max-length (file-length seekable-stream)))
   (let* (#++(start (file-position seekable-stream))
