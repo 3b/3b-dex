@@ -11,5 +11,6 @@
                (:file "util")
                (:file "opcodes")
                (:file "dex")
+               (:file "write-dex")
                (:file "abxml")))
 

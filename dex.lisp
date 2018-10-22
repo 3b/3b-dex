@@ -1,6 +1,7 @@
 (in-package #:3b-dex)
 
 ;; writer will refuse to write any format not in this list
+;; todo: 37=android 7, 38=android 8
 (defparameter *supported-formats* '(35))
 ;; default version number to use in header
 (defparameter *default-format* 35)
@@ -578,7 +579,7 @@
     (flet ((u32 ()
              (loop for i below (1+ arg)
                    sum (ash (read-u8 stream) (* i 8)))))
-      ;; todo: rage check ARG
+      ;; todo: range check ARG
      (case type
        (#x00 ;; signed byte arg should be 0
         (read-s8 stream))
@@ -599,7 +600,7 @@
           (when (and (/= arg 3) (logbitp (+ 7 (* arg 8)) a))
             (setf a (logior a (ash -1 (* 8 (1+ arg))))))
           a))
-       (#x06 ;; signed (32bit) long
+       (#x06 ;; signed (64 bit) long
         (let ((a (loop for i below (1+ arg)
                        sum (ash (read-u8 stream) (* i 8)))))
           (when (and (/= arg 7) (logbitp (+ 7 (* arg 8)) a))
@@ -759,6 +760,43 @@
             (setf (aref a i) c))))
       a)))
 
+
+(defvar *map-items* '(:header-item #x0000
+                      :string-id-item #x0001
+                      :type-id-item #x0002
+                      :proto-id-item #x0003
+                      :field-id-item #x0004
+                      :method-id-item #x0005
+                      :class-def-item #x0006
+                      :call-site-id-item #x0007
+                      :method-handle-item #x0008
+                      :map-list #x1000
+                      :type-list #x1001
+                      :annotation-set-ref-list #x1002
+                      :annotation-set-item #x1003
+                      :class-data-item #x2000
+                      :code-item #x2001
+                      :string-data-item #x2002
+                      :debug-info-item #x2003
+                      :annotation-item #x2004
+                      :encoded-array-item #x2005
+                      :annotations-directory-item #x2006))
+
+(defvar *map-items-rev* (loop for (a b) on *map-items* by #'cddr
+                              collect b collect a))
+(defun read-map (s off)
+  (file-position s off)
+  (let ((count (read-u32 s))
+        (types *map-items-rev*))
+    (list
+     count
+     (loop for i below count
+           for type = (read-u16 s)
+           collect (list (or (getf types type) type)
+                         (read-u16 s)
+                         (read-u32 s)
+                         (read-u32 s))))))
+
 (defun read-dex-file (stream)
   (let* ((magic (read-ub8-vector 8 stream))
          (version (check-dex-magic magic))
@@ -800,7 +838,7 @@
       ;; todo: signal a restartable error if data is more than a few hundred MB?
       (file-position stream data-off)
       (let* (#++(data (read-ub8-vector data-size stream))
-             ;; :map (read-map stream map-off)
+             (map (read-map stream map-off))
              (link-table (read-link-table stream link-off link-size))
              (*strings* (read-strings stream strings-size strings-off))
              (*types* (read-types stream types-size types-off))
@@ -823,4 +861,4 @@
           ;; :methods methods
           :classes classes)
          ;; returning tables as extra values for debugging for now...
-         *strings* *types* *methods* *prototypes* *fields*)))))
+         *strings* *types* *methods* *prototypes* *fields* map)))))

@@ -10,13 +10,23 @@
 
 (defparameter *write-endian* :le)
 
-#++
 (defun write-u16 (x stream)
   (if (eq *write-endian* :le)
-      (progn (write-byte (ldb (byte 0 0) x) stream)
-             (write-byte (ldb (byte 8 0) x) stream))
       (progn (write-byte (ldb (byte 8 0) x) stream)
-             (write-byte (ldb (byte 0 0) x) stream))))
+             (write-byte (ldb (byte 8 8) x) stream))
+      (progn (write-byte (ldb (byte 8 8) x) stream)
+             (write-byte (ldb (byte 8 0) x) stream))))
+
+(defun write-u32 (x stream)
+  (if (eq *write-endian* :le)
+      (progn (write-byte (ldb (byte 8 0) x) stream)
+             (write-byte (ldb (byte 8 8) x) stream)
+             (write-byte (ldb (byte 8 16) x) stream)
+             (write-byte (ldb (byte 8 24) x) stream))
+      (progn (write-byte (ldb (byte 8 24) x) stream)
+             (write-byte (ldb (byte 8 16) x) stream)
+             (write-byte (ldb (byte 8 8) x) stream)
+             (write-byte (ldb (byte 8 0) x) stream))))
 
 (defmacro deformat (format arglist &key read write (size (digit-char-p (char (string format) 0))))
   ;; assuming a u-b-16 stream for now, since we are probably
@@ -801,7 +811,8 @@
              ;; have 2 with same name and different signatures...
              m #++(list (first m) (third m)))
            (fix-field (f)
-             f (list (first f) (third f)))
+             ;; class, name, type
+             (list (first f) (third f) (second f)))
            (lookup (type value)
              (case type
                (:string
@@ -1034,17 +1045,22 @@
 #++
 (unassemble #(26 2536 4209 1403 0 14))
 
-
 (defun asm-lookup-constants (asm)
   (flet ((lookup (type value)
            (case type
              (:string
               (if (boundp '*strings*) (gethash value *strings* value) value))
              ((:type :array :class)
+              (unless (gethash value *types*)
+                (break "failed to lookup ~s ~s?" type value))
               (if (boundp '*types*) (gethash value *types* value) value))
              (:method
+              (unless (gethash value *methods*)
+                (break "failed to lookup ~s ~s?" type value))
                  (if (boundp '*methods*) (gethash value *methods* value) value))
              (:field
+              (unless (gethash value *fields*)
+                (break "failed to lookup ~s ~s?" type value *fields*) )
               (if (boundp '*fields*) (gethash value *fields* value) value))
              (t value))))
     (loop for (op . args) in asm
