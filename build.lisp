@@ -1,3 +1,7 @@
+(defpackage #:3b-dex/build
+  (:use :cl))
+(in-package #:3b-dex/build)
+
 (defvar *sdk-dir* "d:/android/sdk/")
 (defvar *sdk-build-tools-dir* (format nil "~abuild-tools/28.0.3/" *sdk-dir*))
 (defvar *aapt2* (format nil "~aaapt2" *sdk-build-tools-dir*))
@@ -18,13 +22,19 @@
 ;; keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000
 
 (defun compile-resource (filename out-dir)
-  (print (multiple-value-list
-          (uiop:run-program
-           (print
-            (list *aapt2* "compile" (uiop:native-namestring filename)
-                  "-o" (uiop:native-namestring out-dir)))
-           :force-shell nil :output :string
-           :error-output :output))))
+  (multiple-value-bind (o e s)
+      (uiop:run-program
+       (print
+        (list *aapt2* "compile" (uiop:native-namestring filename)
+              "-o" (uiop:native-namestring out-dir)))
+       :force-shell nil :output :string
+       :error-output :output
+       :ignore-error-status t)
+    (declare (ignore e))
+    (if (zerop s)
+        (format t "compile resources: ~s~%" o)
+        (error "compile-resource failed:~%~a~%compiling ~a~% -> ~a"
+               o filename out-dir))))
 
 (defun compile-resources (res-dir out-dir)
   (ensure-directories-exist out-dir)
@@ -36,8 +46,7 @@
                    (alexandria:ends-with #\~ (pathname-name i)))
           do (compile-resource i out-dir)))
 
-(defun link-resources (compiled-res-dir out-apk manifest
-                       &key id-file)
+(defun link-resources* (flat-files out-apk manifest &key id-file)
   (let ((command (list* *aapt2* "link"
                         "-o" out-apk
                         "-I" *android.jar*
@@ -45,18 +54,29 @@
                         (append
                          (when id-file
                            (list "--emit-ids" id-file))
-                         (map 'list 'uiop:native-namestring
-                              (directory
-                               (merge-pathnames "**/*.flat"
-                                                compiled-res-dir)))))))
-    (ensure-directories-exist out-apk)
-    (print
-     (uiop:run-program (print command) :force-shell nil :output :string
-                                       :error-output :output
-                                       :ignore-error-status t))))
+                         flat-files))))
+    (multiple-value-bind (o e s)
+        (uiop:run-program (print command) :force-shell nil :output :string
+                                          :error-output :output
+                                          :ignore-error-status t)
+      (declare (ignore e))
+      (if (zerop s)
+          (format t "link resources: ~s~%" o)
+          (error "link-resources failed:~%~a~%linking ~a~% -> ~a~% manifest ~s is~% file ~s"
+                 o flat-files out-apk
+                 manifest id-file)))))
+
+(defun link-resources (compiled-res-dir out-apk manifest
+                       &key id-file)
+  (ensure-directories-exist out-apk)
+  (link-resources* (map 'list 'uiop:native-namestring
+                        (directory
+                         (merge-pathnames "**/*.flat"
+                                          compiled-res-dir)))
+                   out-apk manifest :id-file id-file))
 
 (defun sign-apk (apk)
-  (let ((command (list *jre*
+  (let ((command (list *java*
                        "-jar"
                        (uiop:native-namestring *apksigner*)
                        "sign" "--ks" (uiop:native-namestring *keystore*)
@@ -89,7 +109,9 @@
       (with-open-file (s "classes.dex" :element-type '(unsigned-byte 8)
                                        :direction :io :if-exists :supersede
                                        :if-does-not-exist :create)
-        (3b-dex::write-dex-file dex s))
+        ;; indirect call so we can load this separately from  3b-dex
+        ;; fixme: clean this up
+        (funcall (find-symbol "WRITE-DEX-FILE" (find-package "3B-DEX")) dex s))
       (add-to-apk path apk-name "classes.dex")
       (sign-apk apk-name))))
 

@@ -4,6 +4,8 @@
                "flexi-streams"
                "alexandria"
                "babel"
+               "3b-dex/build"
+               "ironclad" ;; for adler32 checksum
                ;"chipz" "salza2"
                )
   :serial t
@@ -14,3 +16,11 @@
                (:file "write-dex")
                (:file "abxml")))
 
+
+
+(defsystem :3b-dex/build
+  :description "utilities for running external android SDK tools"
+  :depends-on ("uiop" "alexandria" "cl-ppcre")
+  :serial t
+  :components ((:file "build")
+               (:file "build-asdf")))

@@ -125,10 +125,11 @@
                  (or (gethash s types)
                      (setf (gethash s types) (s s)))))
              (al (a1)
-               (when a1
-                 (let ((a (map 'list #'t a1)))
-                   (or (gethash a arglists)
-                       (setf (gethash a arglists) (coerce a 'vector))))))
+               (unless a1
+                 (setf a1 #()))
+               (let ((a (map 'list #'t a1)))
+                 (or (gethash a arglists)
+                     (setf (gethash a arglists) (coerce a 'vector)))))
              (p (st rt args)
                (let ((p (list (s st) (t rt) (al args))))
                  (or (gethash p prototypes)
@@ -551,9 +552,10 @@
     (align-data 1)
     (let ((encoded-array-items (make-hash-table)))
       (loop for c in classes
-            for inits = (loop for s across (static-fields c)
-                              when (slot-boundp s 'value)
-                                collect (list (field-type s) (value s)))
+            for inits = (when (static-fields c)
+                          (loop for s across (static-fields c)
+                                when (slot-boundp s 'value)
+                                  collect (list (field-type s) (value s))))
             when inits
               ;; todo: set defaults if only some are initialized?
               do (assert (= (length inits) (length (static-fields c))))
@@ -592,14 +594,15 @@
                  (write-uleb128 (length (direct-methods c)) *stream*)
                  (write-uleb128 (length (virtual-methods c)) *stream*)
                  (flet ((f (ff)
-                          (loop for f across ff
-                                for fn = (list c (name f) (field-type f) f)
-                                for i = (gethash fn fields)
-                                  then (- (gethash fn fields) i)
-                                do (write-uleb128 i *stream*)
-                                   (write-uleb128
-                                    (encode-flags (flags f) *field-flags*)
-                                    *stream*)))
+                          (when ff
+                            (loop for f across ff
+                                  for fn = (list c (name f) (field-type f) f)
+                                  for i = (gethash fn fields)
+                                    then (- (gethash fn fields) i)
+                                  do (write-uleb128 i *stream*)
+                                     (write-uleb128
+                                      (encode-flags (flags f) *field-flags*)
+                                      *stream*))))
                         (m (mm)
                           (loop for m across mm
                                 for i = (method-index m)
