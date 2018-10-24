@@ -1,11 +1,14 @@
 (in-package #:3b-dex/build)
 #++(ql:quickload "3bil2-sample")
 (defclass resource-dir (asdf:module)
-  ((apk-name :initform "apk" :initarg :apk :Reader apk)
+  ((apk-name :initform nil :initarg :apk :Reader %apk)
    (manifest :initform "AndroidManifest.xml"
              :initarg :manifest :Reader manifest)
    (resource-package :initarg :resource-package :reader resource-package)))
 
+(defmethod apk ((r resource-dir))
+  (or (%apk r)
+      (asdf:component-name (asdf:component-parent r))))
 (defmethod asdf:component-relative-pathname ((c resource-dir))
   "")
 
@@ -100,8 +103,12 @@
 ;; asdf component for building classes.dex
 
 (defclass classes-dex (asdf:module)
-  ((apk-name :initform nil :initarg :apk :Reader apk)
+  ((apk-name :initform nil :initarg :apk :Reader %apk)
    (sign :initform nil :initarg :sign :Reader sign)))
+
+(defmethod apk ((r classes-dex))
+  (or (%apk r)
+      (asdf:component-name (asdf:component-parent r))))
 
 (defmethod asdf:component-relative-pathname ((c classes-dex))
   "")
@@ -142,7 +149,10 @@
                   "classes.dex")
       (when (sign r)
         (uiop:copy-file apk signed-apk)
-        (sign-apk (uiop:native-namestring signed-apk))))))
+        (sign-apk (uiop:native-namestring signed-apk))
+        (format t "~&~%signed apk ~s. to load:~%(3b-dex/build::install-apk ~s)~%"
+                (apk r)
+                (substitute #\/ #\\ (uiop:native-namestring signed-apk)))))))
 
 
 ;; make accessible as :3b-dex-classes in defsystem

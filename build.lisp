@@ -17,6 +17,7 @@
 (defvar *keystore-pass* "android") ;; password for debug keystore is "android"
 
 (defvar *zip* "c:/msys64/usr/bin/zip")
+(defvar *adb* (format nil "~a/platform-tools/adb" *sdk-dir*))
 
 ;; http://developer.android.com/tools/publishing/app-signing.html#debugmode
 ;; keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000
@@ -115,6 +116,15 @@
       (add-to-apk path apk-name "classes.dex")
       (sign-apk apk-name))))
 
+(defun install-apk (apk)
+  (print
+   (uiop:run-program (list *adb* "install" "-r"
+                           (uiop:native-namestring apk))
+                     :force-shell nil
+                     :output :string
+                     :error-output :output
+                     :ignore-error-status t))
+)
 #++
 (compile-resources "/tmp/tmp-app/res/" "c:/tmp/tmp-app/build/")
 #++
