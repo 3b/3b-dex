@@ -29,7 +29,7 @@
                   (incf i))
                 (return (list (format nil "~a~{~a~}" (char sig i)
                                       (reverse args))
-                              (format nil "~a" (char sig i))))))
+                              (subseq sig i)))))
 
 (defun write-u16 (x stream)
   (write-byte (ldb (byte 8 0) x) stream)
@@ -165,14 +165,24 @@
                                   (ff
                                    (apply #'field ff))
                                   (c
-                                   (field* (list c
-                                                 (s (second vf))
-                                                 (t (third vf))
-                                                 nil)))
+                                   (field*
+                                    (list
+                                     c
+                                     (s (second vf))
+                                     (t (third vf))
+                                     (loop with n = (second vf)
+                                           for i across
+                                                 (concatenate
+                                                  'vector
+                                                  (instance-fields c)
+                                                  (static-fields c))
+                                           when (string= n (name i))
+                                             return i))))
                                   (t
                                    (field* (list (t (first vf))
                                                  (s (second vf))
-                                                 (t (third vf)) nil))))))
+                                                 (t (third vf))
+                                                 nil))))))
                             (when (getf v :class)
                               (t (getf v :class)))
                             (when (getf v :type)
@@ -381,7 +391,7 @@
                         :key (lambda (a)
                                (list (gethash (first a) types)
                                      (gethash (second a) strings)
-                                     (gethash (third a) types)))))
+                                     (gethash (third a) prototypes)))))
          (*strings* strings)
          (*methods* (alexandria:plist-hash-table
                      (loop for m in methods
@@ -573,7 +583,8 @@
                      (write-encoded-array i))))
       (write-map :class-data-item (length a) *data-offset*)
       (loop for c in classes
-            ;; class_def_item
+            do (format t "write class ~s~%" c)
+               ;; class_def_item
             do (write-table-32 (gethash (type-name c) types))
                (write-table-32 (encode-flags (flags c) *class-flags*))
                (write-table-32 (gethash (superclass c) types +no-index+))
@@ -595,19 +606,34 @@
                  (write-uleb128 (length (virtual-methods c)) *stream*)
                  (flet ((f (ff)
                           (when ff
-                            (loop for f across ff
+                            (loop for f
+                                    across (sort (copy-seq ff) '<
+                                                 :key (lambda (f)
+                                                        (gethash
+                                                         (list c (name f)
+                                                               (field-type f) f)
+                                                         fields)))
                                   for fn = (list c (name f) (field-type f) f)
                                   for i = (gethash fn fields)
-                                    then (- (gethash fn fields) i)
-                                  do (write-uleb128 i *stream*)
+                                    then (- (gethash fn fields) idx)
+                                  for idx = (gethash fn fields)
+                                  do (format t "write field ~s: ~s = ~s~%"
+                                             f (gethash fn fields) i)
+                                     (write-uleb128 i *stream*)
                                      (write-uleb128
                                       (encode-flags (flags f) *field-flags*)
                                       *stream*))))
                         (m (mm)
-                          (loop for m across mm
+                          (format t "write methods ~s~%"
+                                  (map 'list 'method-index mm))
+                          (loop for m across (sort (copy-seq mm) '<
+                                                   :key 'method-index)
                                 for i = (method-index m)
-                                  then (- (method-index m) i)
-                                do (write-uleb128 i *stream*)
+                                  then (- (method-index m) idx)
+                                for idx = (method-index m)
+                                do (format t "write methods ~s: ~s = ~s~%"
+                                           m idx i)
+                                   (write-uleb128 i *stream*)
                                    (write-uleb128
                                     (encode-flags (flags m) *method-flags*)
                                     *stream*)
