@@ -123,8 +123,7 @@
                      :force-shell nil
                      :output :string
                      :error-output :output
-                     :ignore-error-status t))
-)
+                     :ignore-error-status t)))
 #++
 (compile-resources "/tmp/tmp-app/res/" "c:/tmp/tmp-app/build/")
 #++
