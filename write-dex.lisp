@@ -502,8 +502,6 @@
                    (assert (= 1 (length cc)))
                    (aref cc 0)))
                 (t 0))))
-    (format t "write value ~s/~s ~s = ~2,'0x~%" .type value
-            arg type)
     (when (eql type #x1f)
       (setf arg (if value 1 0)))
     (write-byte (dpb arg (byte 3 5) type) *stream*)
@@ -583,8 +581,7 @@
                      (write-encoded-array i))))
       (write-map :class-data-item (length a) *data-offset*)
       (loop for c in classes
-            do (format t "write class ~s~%" c)
-               ;; class_def_item
+            ;; class_def_item
             do (write-table-32 (gethash (type-name c) types))
                (write-table-32 (encode-flags (flags c) *class-flags*))
                (write-table-32 (gethash (superclass c) types +no-index+))
@@ -617,23 +614,17 @@
                                   for i = (gethash fn fields)
                                     then (- (gethash fn fields) idx)
                                   for idx = (gethash fn fields)
-                                  do (format t "write field ~s: ~s = ~s~%"
-                                             f (gethash fn fields) i)
-                                     (write-uleb128 i *stream*)
+                                  do (write-uleb128 i *stream*)
                                      (write-uleb128
                                       (encode-flags (flags f) *field-flags*)
                                       *stream*))))
                         (m (mm)
-                          (format t "write methods ~s~%"
-                                  (map 'list 'method-index mm))
                           (loop for m across (sort (copy-seq mm) '<
                                                    :key 'method-index)
                                 for i = (method-index m)
                                   then (- (method-index m) idx)
                                 for idx = (method-index m)
-                                do (format t "write methods ~s: ~s = ~s~%"
-                                           m idx i)
-                                   (write-uleb128 i *stream*)
+                                do (write-uleb128 i *stream*)
                                    (write-uleb128
                                     (encode-flags (flags m) *method-flags*)
                                     *stream*)
@@ -699,21 +690,17 @@
       (incf map-count) ;; encoded arrays
       (incf map-count) ;; class data
       (incf map-count) ;; map-list
-      (format t ":header = ~s~%" header)
       (write-header (version dex)
                     (list*
                      :map-off *data-offset*
                      header)
                     stream)
-      (format t "file position = ~x~%" (file-position stream))
       (align-data 4)
-      (format t "file position => ~x~%" (file-position stream))
       (setf *map-offset* *data-offset*)
       (incf *data-offset* (+ 4
                              (* map-count
                                 (second (getf *id-sizes* :map-off)))))
       (file-position *stream* *map-offset*)
-      (format t "map count ~s @ ~x~%" map-count (file-position stream))
       (write-u32 map-count *stream*)
       (let ((map *map-offset*))
         (incf *map-offset* 4)
@@ -762,8 +749,6 @@
       ;; write call-site IDs
       ;; write method handles
 
-      (format t "p = ~s / ~s~%" (file-position *stream*)
-              *data-offset*)
       ;; fill in remainder of header
       (file-position *stream* 32) ;; file size
       (write-u32 *data-offset* *stream*)
@@ -774,8 +759,6 @@
                            :element-type '(unsigned-byte 8))))
         (read-sequence c *stream*)
         (file-position *stream* 8) ;; checksum
-        (format t "checksum = ~8,'0x~%"
-                (ironclad:digest-sequence 'ironclad:adler32 c))
         (write-sequence (reverse (ironclad:digest-sequence 'ironclad:adler32 c))
                         *stream*))
       (file-position *stream* *data-offset*))))
