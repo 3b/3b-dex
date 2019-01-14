@@ -131,6 +131,8 @@
     c))
 
 (defvar *last-dex-file* nil)
+(defvar *autoload-apk* nil)
+
 (defmethod asdf:perform ((op asdf:compile-op) (r classes-dex))
   (format t "Write dex file ~s~% ~s~%" (asdf:output-files op r) (classes r))
   (let* ((df (apply (find-symbol "LINK-DEX-FILE" :3bil2)
@@ -152,9 +154,20 @@
       (when (sign r)
         (uiop:copy-file apk signed-apk)
         (sign-apk (uiop:native-namestring signed-apk))
-        (format t "~&~%signed apk ~s. to load:~%(3b-dex/build::install-apk ~s)~%"
-                (apk r)
-                (substitute #\/ #\\ (uiop:native-namestring signed-apk)))))))
+        (cond
+          (*autoload-apk*
+           (format t "~&~%signed apk ~s. sending to emulator/device...~%"
+                   (apk r))
+           (let ((s (format nil "(3b-dex/build::install-apk ~s)"
+                            (substitute #\/ #\\ (uiop:native-namestring
+                                                 signed-apk)))))
+             (eval (read-from-string s))))
+          (t
+           (format t "~&~%signed apk ~s.~%~
+to load automatically after building: (setf 3b-dex/build::*autoload-apk* t)~%~
+to load manually:~% (3b-dex/build::install-apk ~s)~%"
+                   (apk r)
+                   (substitute #\/ #\\ (uiop:native-namestring signed-apk)))))))))
 
 
 ;; make accessible as :3b-dex-classes in defsystem
