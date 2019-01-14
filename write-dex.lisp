@@ -135,12 +135,17 @@
                  (or (gethash p prototypes)
                      (setf (gethash p prototypes) p))))
              (m (type p n m)
-               (let ((mm (list (t type)
-                               (s n)
-                               (apply #'p p)
-                               m)))
-                 (or (gethash mm methods)
-                     (setf (gethash mm methods) mm))))
+               (let* ((m1 `(,(t type) ,(s n) ,(apply #'p p)))
+                      (mk `(,@m1 nil))
+                      (mv `(,@m1 ,m))
+                      (r (gethash mk methods)))
+                 (when (and r m (not (eql m (fourth r))))
+                   (unless (fourth r)
+                     (break "changed method?" type p n m r))
+                   (setf (fourth r) m))
+                 (unless r
+                   (setf (gethash mk methods) mv))
+                 r))
              (field* (ff)
                (or (gethash ff fields)
                    (setf (gethash ff fields) ff)))
@@ -387,7 +392,7 @@
 
 
 (defun write-methods (h strings types prototypes fields)
-  (let* ((methods (sort (alexandria:hash-table-keys h) 'lexical<
+  (let* ((methods (sort (alexandria:hash-table-values h) 'lexical<
                         :key (lambda (a)
                                (list (gethash (first a) types)
                                      (gethash (second a) strings)
@@ -399,7 +404,7 @@
                            collect (list (first m)
                                          (third m)
                                          (second m)
-                                         (fourth m))
+                                         nil)
                            collect i)
                      :test 'equalp))
          (*fields* (alexandria:plist-hash-table
@@ -762,4 +767,3 @@
         (write-sequence (reverse (ironclad:digest-sequence 'ironclad:adler32 c))
                         *stream*))
       (file-position *stream* *data-offset*))))
-

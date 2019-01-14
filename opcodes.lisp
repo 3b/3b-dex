@@ -1056,7 +1056,7 @@
               (if (boundp '*types*) (gethash value *types* value) value))
              (:method
               (unless (gethash value *methods*)
-                (break "failed to lookup ~s ~s?" type value))
+                (break "failed to lookup ~s ~s?" type value *methods*))
                  (if (boundp '*methods*) (gethash value *methods* value) value))
              (:field
               (unless (gethash value *fields*)
