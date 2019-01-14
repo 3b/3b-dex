@@ -130,6 +130,7 @@
       (push s c))
     c))
 
+(defvar *last-dex-file* nil)
 (defmethod asdf:perform ((op asdf:compile-op) (r classes-dex))
   (format t "Write dex file ~s~% ~s~%" (asdf:output-files op r) (classes r))
   (let* ((df (apply (find-symbol "LINK-DEX-FILE" :3bil2)
@@ -138,6 +139,7 @@
          (o (pop out))
          (apk (pop out))
          (signed-apk (pop out)))
+    (setf *last-dex-file* df)
     (with-open-file (f o :direction :io :element-type '(unsigned-byte 8)
                          :if-exists :supersede :if-does-not-exist :create)
       (funcall (find-symbol "WRITE-DEX-FILE" :3b-dex)
