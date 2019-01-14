@@ -28,7 +28,7 @@
                 (when (char= (char sig i) #\[)
                   (incf i))
                 (return (list (format nil "~a~{~a~}" (char sig i)
-                                      (reverse args))
+                                      args)
                               (subseq sig i)))))
 
 (defun write-u16 (x stream)
