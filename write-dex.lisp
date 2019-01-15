@@ -20,10 +20,20 @@
         until (char= c #\))
         unless (or skip (char= c #\[))
           collect c into args
+        when (or (char= c #\;) (eql skip 0))
+          do (setf skip nil)
+        when (and (char= c #\[) (not skip))
+          collect #\L into args
+        ;; skip to end of array type
+          and do (let ((c (position #\[ sig :start i :test-not 'char=)))
+                   (setf skip (if (char= (char sig c) #\L)
+                                  t
+                                  (- c i))))
+
         when (char= c #\L)
           do (setf skip t)
-        when (char= c #\;)
-          do (setf skip nil)
+        when (numberp skip)
+          do (decf skip)
         finally (incf i)
                 (when (char= (char sig i) #\[)
                   (incf i))
