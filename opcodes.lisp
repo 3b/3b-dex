@@ -445,7 +445,7 @@
 (defop #x21 :array-length (dest array-ref) 12x (:regn4 :rego4))
 
 (defop #x22 :new-instance (dest type) 21c (:rego8 :type)) ;; :class?
-(defop #x23 :new-array (dest size type) 22c (:rego8 :regn4 :array))
+(defop #x23 :new-array (dest size type) 22c (:rego4 :regn4 :array))
 
 ;; not sure if these should indicate optional args?
 (defop #x24 :filled-new-array (type &rest) 35c (:type :reg4 :reg4 :reg4 :reg4 :reg4))
