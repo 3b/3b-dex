@@ -151,7 +151,8 @@
                       (r (gethash mk methods)))
                  (when (and r m (not (eql m (fourth r))))
                    (unless (fourth r)
-                     (break "changed method?" type p n m r))
+                     (format t "changed method?~% ~s ~s ~s ~s ~s~%"
+                             type p n m r))
                    (setf (fourth r) m))
                  (unless r
                    (setf (gethash mk methods) mv))
@@ -219,6 +220,8 @@
                                  (return-type m))))
                       (p (p (first short-type) (return-type m)
                             (parameters m))))
+                 (format t "short type ~s ->~s ~s~%" short-type
+                         (return-type m) (parameters m))
                  (c (code m))
                  (m (type-name class) p (name m) m))))
       (loop for class across (classes dex)
