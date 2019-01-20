@@ -5,10 +5,55 @@
 ;; actual opcode definitions (indexed by name rather than number so we
 ;; can mix in pseudo-ops and higher-level ops as well
 (defparameter *opcodes* (make-hash-table))
+(defparameter *register-arg-types*
+  (alexandria:plist-hash-table
+   '(:reg4 (:register * 4)
+     :reg8 (:register * 8)
+     :reg16 (:register * 16)
+     :regn4 (:register :scalar 4)
+     :regn8 (:register :scalar 8)
+     :regn16 (:register :scalar 16)
+     :regp4 (:register :wide 4)
+     :regp8 (:register :wide 8)
+     :regp16 (:register :wide 16)
+     :rego4 (:register :object 4)
+     :rego8 (:register :object 8)
+     :rego16 (:register :object 16)
+     :rega4 (:register :array 4)
+     :rega8 (:register :array 8)
+     :rega16 (:register :array 16)
+     :lit32 (:literal * 32)
+     :lit32s (:literal :signed 32)
+     :lit64 (:literal * 64)
+     :lit64s (:literal :signed 64)
+     :class (:type :class)
+     :type (:type :type)
+     :array (:type :array)
+     :lit-array (:literal :array)
+     :branch8 (:branch * 8)
+     :branch16 (:branch * 16)
+     :branch32 (:branch * 32)
+     :packed-switch (:switch :packed)
+     :sparse-switch (:switch :sparse)
+     :string (:string)
+     :field (:field)
+     :method (:method))))
+
+;; initialized during opcode definition
+(defparameter *out-registers* (make-hash-table))
 
 (defparameter *instruction-formats* (make-hash-table))
 
 (defparameter *write-endian* :le)
+
+(defun get-op-register-sizes (opcode)
+  (let* ((o (gethash opcode *opcodes*))
+         (types (getf o :types)))
+    (loop for rt in types
+          collect (third (gethash rt *register-arg-types*)))))
+
+(defun get-op-out-registers (opcode)
+  (gethash opcode *out-registers*))
 
 (defun write-u16 (x stream)
   (if (eq *write-endian* :le)
@@ -342,7 +387,6 @@
            (out (ldb (byte 16 32) b))
            (out (ldb (byte 16 48) b))))
 
-(integer-length 16)
 (defmacro defop (opcode name args format types)
   ;; ARGS is mostly for documentation atm, would be nice to use it for
   ;; slime autodoc though...
@@ -354,6 +398,11 @@
              ,opcode ',name
              (gethash ',name *opcodes*)
              (aref *opcode-index* ,opcode)))
+     ;; fixme: this is a bit of a hack, but don't want to modify the
+     ;; definitions yet...
+     (setf (gethash ',name *out-registers*)
+           ',(loop for a in args
+                   collect (eq a 'dest)))
      (setf (aref *opcode-index* ,opcode)
            ',name)
      (setf (gethash ',name *opcodes*)
@@ -726,10 +775,17 @@
 
 ;;; pseudo-ops
 (defmacro defop* (name args &key format types size write)
+  (unless types
+    (setf types (make-list (length args) :initial-element nil)))
   `(progn
      (when (gethash ,name *opcodes*)
        (warn "redefining pseudo-opcode ~s (~s)~%"
              ',name (gethash ',name *opcodes*)))
+     ;; fixme: this is a bit of a hack, but don't want to modify the
+     ;; definitions yet...
+     (setf (gethash ',name *out-registers*)
+           ',(loop for a in args
+                   collect (eq a 'dest)))
      (setf (gethash ',name *opcodes*)
            (list :code NIL :name ',name :format ',format :args ',args
                  :types ',types

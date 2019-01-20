@@ -2,4 +2,5 @@
   (:use :cl)
   (:export
 
-   ))
+   #:get-op-register-sizes
+   #:get-op-out-registers))
